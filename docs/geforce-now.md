@@ -162,6 +162,43 @@ Two things follow for the relay:
    input report, it can present whichever layout the preset expects — steering, empty clutch,
    throttle, brake — and the default mapping then lines up with no remapping in-game.
 
+## The wire format has to match a real G29, not just the identity (2026-09-21)
+
+Matching the USB identity got the cloud to whitelist the device (FH5 applies its G29 preset and
+force feedback flows), but **input did not reach the game**. GFN's client log shows why the plumbing
+is fine and the *bytes* are not:
+
+```
+[GIOInterface] Enabling GSHID
+[HIDDevicesController] GSHID: Supporting {046D:C24F}                 <- our identity is whitelisted here
+[HIDDevicesController] Plugging 046D:C24F:0100                        <- plugged, id 25
+[NVST:RiClientBackend] Sending HID Change event: control=1, ID=10, 046D:C24F:0100
+[HIDDevice] start: Beginning HID reading loop for 046D:C24F:0100 25   <- raw reports are read and forwarded
+```
+
+So the client forwards our device's **raw reports**, and the cloud parses them with G29 semantics
+(that is where the identity led it). Our fake device was sending the Driving Force GT's own layout,
+which differs in ways that matter:
+
+| field | a real G29 (lg4ff family, measured on hardware by LogiWheelHost) | the DFGT layout we were sending |
+|---|---|---|
+| buttons | bytes 0-3 | bytes 0-3 ✅ |
+| steering | bytes 4-5, **16-bit, centre 32768** | bytes 4-5, **14-bit, centre 8192** ❌ (centre reads as ~12% = hard left) |
+| throttle / brake | bytes 6 / 7, uint8, idle 255 | the same ✅ |
+| clutch | **byte 8** | **absent** - the report ran one byte short ❌ |
+| `bcdDevice` | 0x1350 (Linux's lg4ff ident mask) | whatever the stack defaults to ❌ |
+
+Our fake device now presents a G29-shaped wheel: `tools/make_g29_descriptor.py` generates a
+*9-byte* input report (hat + 25 buttons in bytes 0-3, steering 16-bit at 4-5, throttle 6, brake 7,
+clutch 8) plus the unchanged 7-byte vendor FFB output report, and the relay assembles that layout
+from the real wheel (its 14-bit axis scaled by four, so centre 8192 -> 32768). `bcdDevice` is 0x1350.
+
+That change is deliberately **self-consistent under either interpretation**: the descriptor declares
+16-bit steering and the payload sends 16-bit steering, so a reader that trusts our descriptor and a
+reader that assumes G29 semantics agree on the same values. Verified locally: the fake device reads
+back as `usage=0x30 value=28004`, exactly four times the real wheel's 7001, with the clutch axis
+present and `bcdDevice = 0x1350`.
+
 ## Route matrix
 
 | wheel | input in streamed games | force feedback | notes |

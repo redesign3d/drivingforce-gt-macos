@@ -242,8 +242,8 @@ struct dfgt_ctx {
 
 	/* relay mode: the identity bridge on a serial port, and the state to stream to it */
 	int		relay_fd;
-	uint8_t		relay_state[8];
-	uint8_t		relay_sent[8];
+	uint8_t		relay_state[9];
+	uint8_t		relay_sent[9];
 	int		relay_dirty;
 	uint64_t	relay_sent_ms;
 	uint64_t	relay_poll_ms;
@@ -1033,7 +1033,7 @@ static void relay_poll_serial(struct dfgt_ctx *c)
 			frame[got++] = b;
 			if (got == 3) {
 				want = b;
-				if (want > 8) got = 0;
+				if (want > 12) got = 0;
 			} else if (got == (uint8_t)(want + 4)) {
 				uint8_t sum = 0;
 				for (uint8_t k = 1; k < got - 1; k++) sum ^= frame[k];
@@ -1055,9 +1055,8 @@ static void relay_poll_serial(struct dfgt_ctx *c)
 static void relay_prime(struct dfgt_ctx *c)
 {
 	CFArrayRef elems = IOHIDDeviceCopyMatchingElements(c->dev, NULL, kIOHIDOptionsTypeNone);
-	uint8_t r[8] = { 0x08, 0x00, 0x00, 0x7e, 0x00, 0x20, 0xff, 0xff };
-	unsigned hat = 8, buttons = 0, steer = DFGT_CENTER, thr = 0xff, brk = 0xff, v7 = 0x3f, v2 = 0;
-	int vendor_seen = 0;
+	uint8_t r[9] = { 0x08, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff };
+	unsigned hat = 8, buttons = 0, steer = DFGT_CENTER, thr = 0xff, brk = 0xff;
 
 	for (CFIndex i = 0; elems && i < CFArrayGetCount(elems); i++) {
 		IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(elems, i);
@@ -1076,22 +1075,23 @@ static void relay_prime(struct dfgt_ctx *c)
 		else if (page == 0x01 && usage == 0x30) steer = (unsigned)val;
 		else if (page == 0x01 && usage == 0x31) thr = (unsigned)val;
 		else if (page == 0x01 && usage == 0x32) brk = (unsigned)val;
-		else if (page == 0xff00 && usage == 0x01) {
-			if (vendor_seen++ == 0) v7 = (unsigned)val & 0x7f;
-			else v2 = (unsigned)val & 0x03;
-		}
 	}
 	if (elems) CFRelease(elems);
 
+	/* Assemble the G29-shaped report the cloud parses: buttons in bytes 0..3, steering
+	   16-bit at 4..5 (the DFGT's 14-bit axis scaled by four, so centre 8192 -> 32768),
+	   then the three pedals. The DFGT has no clutch, so that byte stays released. */
+	unsigned steer16 = ((steer & 0x3fff) * 4) & 0xffff;
 	r[0] = (uint8_t)((hat & 0x0f) | ((buttons & 0x0f) << 4));
 	r[1] = (uint8_t)((buttons >> 4) & 0xff);
 	r[2] = (uint8_t)((buttons >> 12) & 0xff);
-	r[3] = (uint8_t)(((buttons >> 20) & 1) | ((v7 & 0x7f) << 1));
-	r[4] = (uint8_t)(steer & 0xff);
-	r[5] = (uint8_t)(((steer >> 8) & 0x3f) | ((v2 & 0x03) << 6));
+	r[3] = (uint8_t)((buttons >> 20) & 0x1f);
+	r[4] = (uint8_t)(steer16 & 0xff);
+	r[5] = (uint8_t)(steer16 >> 8);
 	r[6] = (uint8_t)(thr & 0xff);
 	r[7] = (uint8_t)(brk & 0xff);
-	memcpy(c->relay_state, r, 8);
+	r[8] = 0xff;
+	memcpy(c->relay_state, r, 9);
 }
 
 static int serial_open(const char *path)
@@ -1157,12 +1157,12 @@ static int cmd_relay(int argc, char **argv)
 		if (now_ms() - C.relay_poll_ms >= 20) {
 			C.relay_poll_ms = now_ms();
 			relay_prime(&C);
-			if (memcmp(C.relay_state, C.relay_sent, 8) != 0)
+			if (memcmp(C.relay_state, C.relay_sent, 9) != 0)
 				C.relay_dirty = 1;
 		}
 		if (C.relay_dirty || now_ms() - C.relay_sent_ms > RELAY_KEEPALIVE_MS) {
-			relay_send_frame(C.relay_fd, RELAY_STATE, C.relay_state, 8);
-			memcpy(C.relay_sent, C.relay_state, 8);
+			relay_send_frame(C.relay_fd, RELAY_STATE, C.relay_state, 9);
+			memcpy(C.relay_sent, C.relay_state, 9);
 			C.relay_dirty = 0;
 			C.relay_sent_ms = now_ms();
 		}
@@ -1172,7 +1172,7 @@ static int cmd_relay(int argc, char **argv)
 		if (now_ms() - C.relay_status_ms >= 2000) {
 			C.relay_status_ms = now_ms();
 			printf("state: steer=%u throttle_raw=%u brake_raw=%u\n",
-			       (unsigned)(C.relay_state[4] | ((C.relay_state[5] & 0x3f) << 8)),
+			       (unsigned)(C.relay_state[4] | (C.relay_state[5] << 8)),
 			       C.relay_state[6], C.relay_state[7]);
 			fflush(stdout);
 		}

@@ -25,7 +25,7 @@
 #include <Arduino.h>
 #include "USB.h"
 #include "USBHID.h"
-#include "wheel_descriptor.h"
+#include "g29_descriptor.h"
 #include "soc/rtc_cntl_reg.h"
 
 USBHID HID;
@@ -51,9 +51,9 @@ static volatile uint8_t g_ffb_count = 0;
 #define RELAY_SYNC 0xA5
 #define RELAY_STATE 'S'
 #define RELAY_FFB 'F'
-#define RELAY_MAX_PAYLOAD 8
+#define RELAY_MAX_PAYLOAD 12
 
-static uint8_t  relay_state[8] = { 0x08, 0x00, 0x00, 0x3e, 0x00, 0x20, 0xff, 0xff };
+static uint8_t  relay_state[9] = { 0x08, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff };
 static uint32_t relay_last_ms = 0;
 
 /* The Mac is only considered in charge while it keeps sending state frames. */
@@ -100,8 +100,8 @@ static void relay_poll(void)
         } else if (got == (uint8_t)(want + 4)) {
             uint8_t sum = 0;
             for (uint8_t i = 1; i < got - 1; i++) sum ^= frame[i];
-            if (sum == frame[got - 1] && frame[1] == RELAY_STATE && want == 8) {
-                memcpy(relay_state, frame + 3, 8);
+            if (sum == frame[got - 1] && frame[1] == RELAY_STATE && want == 9) {
+                memcpy(relay_state, frame + 3, 9);
                 relay_last_ms = millis();
             }
             got = 0;
@@ -115,13 +115,13 @@ public:
         static bool initialized = false;
         if (!initialized) {
             initialized = true;
-            HID.addDevice(this, sizeof(wheel_report_descriptor));
+            HID.addDevice(this, sizeof(g29_report_descriptor));
         }
     }
 
     uint16_t _onGetDescriptor(uint8_t *buffer) {
-        memcpy(buffer, wheel_report_descriptor, sizeof(wheel_report_descriptor));
-        return sizeof(wheel_report_descriptor);
+        memcpy(buffer, g29_report_descriptor, sizeof(g29_report_descriptor));
+        return sizeof(g29_report_descriptor);
     }
 
     /* The wheel's 131-byte feature report is unknown territory; answer with zeros
@@ -189,13 +189,14 @@ static WheelHID wheel;
    vendor bits - which doubles as the cable-free "is the cloud sending FFB?" readout. */
 static void send_input_state()
 {
-    uint8_t state[8];
+    uint8_t state[9];
 
     if (relay_active()) {
         memcpy(state, relay_state, sizeof state);
     } else {
-        uint8_t count = g_ffb_count & 0x7f;
-        const uint8_t neutral[8] = { 0x08, 0x00, 0x00, (uint8_t)(count << 1), 0x00, 0x20, 0xff, 0xff };
+        /* Neutral G29-shaped state: hat centred, no buttons, steering centred at 32768,
+           pedals and clutch released. The FFB counter lives in the serial log now. */
+        const uint8_t neutral[9] = { 0x08, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff };
         memcpy(state, neutral, sizeof state);
     }
     if (!HID.SendReport(0, state, sizeof state)) {
@@ -209,12 +210,13 @@ void setup()
     Serial.begin(115200);  /* UART0 RX for the relay protocol; logs go out via printf */
     delay(300);
     printf("\ng29-gadget: presenting 046d:c24f \"G29 Driving Force Racing Wheel\"\n");
-    printf("report descriptor: %u bytes (DFGT's, captured from the real wheel)\n",
-           (unsigned)sizeof(wheel_report_descriptor));
+    printf("report descriptor: %u bytes (G29-shaped: 9-byte input, 7-byte FFB output)\n",
+           (unsigned)sizeof(g29_report_descriptor));
 
     USB.manufacturerName("Logitech");
     USB.productName("G29 Driving Force Racing Wheel");
     USB.serialNumber("0000000000");
+    USB.firmwareVersion(0x1350);	/* bcdDevice: the value a real G29 reports */
     /* Note: these are uppercase setters, and they only take effect before USB.begin(). */
     if (!USB.VID(0x046d) || !USB.PID(0xc24f)) {
         printf("warning: VID/PID refused - USB already started?\n");
