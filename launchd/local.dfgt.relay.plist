@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>local.dfgt.relay</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/simon/development/logitech-drivingforcegt-drivers/build/dfgt</string>
+		<string>relay</string>
+		<string>--port</string>
+		<string>/dev/cu.usbmodem59090597741</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/simon/Library/Logs/dfgt-relay.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/simon/Library/Logs/dfgt-relay.log</string>
+</dict>
+</plist>
