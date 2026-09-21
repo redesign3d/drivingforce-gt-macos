@@ -1,0 +1,26 @@
+# real captured reports from this wheel — wheel turning under daemon-issued FFB
+# format: 8 raw input-report bytes per line, no report id (descriptor has none)
+# fields: b0[3:0] hat, b0[7:4]+b1+b2[0] buttons 1..21, b3[7:1] vendor7, b4|b5[5:0] steer,
+#         b5[7:6] vendor2, b6 throttle, b7 brake   (pedals: 255 = released)
+08 00 00 5e 94 2e ff ff
+08 00 00 5e 83 2e ff ff
+08 00 00 5e 73 2e ff ff
+08 00 00 5e 62 2e ff ff
+08 00 00 5e 51 2e ff ff
+08 00 00 5e 40 2e ff ff
+08 00 00 5e 2f 2e ff ff
+08 00 00 5e 1e 2e ff ff
+08 00 00 5e 32 20 ff ff
+08 00 00 5e 21 20 ff ff
+08 00 00 5e 10 20 ff ff
+08 00 00 5e ff 1f ff ff
+08 00 00 5e ef 1f ff ff
+08 00 00 5e de 1f ff ff
+08 00 00 5e cd 1f ff ff
+08 00 00 5e bc 1f ff ff
+08 00 00 5e ab 1f ff ff
+08 00 00 5e 9a 1f ff ff
+08 00 00 5e 89 1f ff ff
+08 00 00 5e 78 1f ff ff
+08 00 00 5e 67 1f ff ff
+08 00 00 5e 57 1f ff ff
