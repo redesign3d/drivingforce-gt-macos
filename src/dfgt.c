@@ -21,6 +21,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -237,6 +239,15 @@ struct dfgt_ctx {
 	unsigned	autocenter;
 	unsigned	vid, pid;	/* identity to match: personas change the PID */
 	int		addr_override;	/* --vid/--pid given: never route through the daemon */
+
+	/* relay mode: the identity bridge on a serial port, and the state to stream to it */
+	int		relay_fd;
+	uint8_t		relay_state[8];
+	uint8_t		relay_sent[8];
+	int		relay_dirty;
+	uint64_t	relay_sent_ms;
+	uint64_t	relay_poll_ms;
+	uint64_t	relay_status_ms;
 
 	int		listen_fd;
 	struct conn	conns[DFGT_MAX_CONNS];
@@ -512,6 +523,11 @@ static void on_input_report(void *ctx, IOReturn res, void *sender, IOHIDReportTy
 
 	dfgt_decode(report, &c->st);
 	c->st.t_ms = now_ms();
+	if (c->relay_fd >= 0) {		/* relay: hand these bytes straight to the board */
+		memcpy(c->relay_state, report, 8);
+		c->relay_dirty = 1;
+		return;
+	}
 	if (c->st.valid && prev.valid) {
 		struct { const char *n; unsigned a, b; } f[] = {
 			{ "hat",     prev.hat,      c->st.hat },
@@ -745,7 +761,7 @@ static void print_values(IOHIDDeviceRef dev)
 			       (unsigned)IOHIDElementGetUsagePage(e),
 			       (unsigned)IOHIDElementGetUsage(e),
 			       (long)IOHIDValueGetIntegerValue(v));
-			CFRelease(v);
+			/* non-owned reference: do not CFRelease it */
 		}
 	}
 	if (elems) CFRelease(elems);
@@ -941,6 +957,229 @@ static int dispatch_control_command(int argc, char **argv)
 		return 1;
 	}
 	return cmd_ffb_direct(line);
+}
+
+/* ------------------------------------------------------------------ relay (M2)
+ *
+ * Bridges the real wheel (046d:c29a) and the ESP32-S3 that claims to be a G29
+ * (046d:c24f), which GeForce NOW is driving:
+ *
+ *   wheel --8-byte input report--> board   (state frame, 0xA5 'S' ...)
+ *   board --7-byte FFB report----> wheel   (IOHIDDeviceSetReport, output)
+ *
+ * The only difference between the two devices is the identity - the report descriptor is
+ * the DFGT's own - so the payloads pass through unchanged, and the FFB the cloud sends is
+ * the lg4ff dialect the wheel already speaks.
+ */
+
+#define RELAY_SYNC	0xa5
+#define RELAY_STATE	'S'
+#define RELAY_FFB	'F'
+#define RELAY_KEEPALIVE_MS 200
+
+static int cmd_relay(int argc, char **argv);
+
+static void report_ffb(const uint8_t *b)
+{
+	static uint32_t n = 0;
+
+	n++;
+	if (b[0] == 0xf8 && b[1] == 0x81) {
+		printf("[ffb %u] set range %u deg\n", n, b[2] | (b[3] << 8));
+	} else if (b[0] == 0x11 && b[1] == 0x08) {
+		printf("[ffb %u] constant force %d\n", n, (int)b[2] - 0x80);
+	} else if (b[0] == 0xfe && b[1] == 0x0d) {
+		printf("[ffb %u] autocenter profile %02x %02x %02x\n", n, b[2], b[3], b[4]);
+	} else {
+		printf("[ffb %u] %02x %02x %02x %02x %02x %02x %02x\n", n,
+		       b[0], b[1], b[2], b[3], b[4], b[5], b[6]);
+	}
+	fflush(stdout);
+}
+
+static void relay_send_frame(int fd, uint8_t type, const uint8_t *payload, uint8_t len)
+{
+	uint8_t frame[16];
+	uint8_t sum = (uint8_t)(type ^ len);
+	size_t n = 0;
+
+	frame[n++] = RELAY_SYNC;
+	frame[n++] = type;
+	frame[n++] = len;
+	for (uint8_t i = 0; i < len; i++) {
+		frame[n++] = payload[i];
+		sum ^= payload[i];
+	}
+	frame[n++] = sum;
+	(void)!write(fd, frame, n);
+}
+
+/* Parse whatever the board has sent; forward FFB frames to the wheel. */
+static void relay_poll_serial(struct dfgt_ctx *c)
+{
+	static uint8_t frame[16];
+	static uint8_t got, want;
+	uint8_t buf[256];
+	ssize_t n;
+
+	while ((n = read(c->relay_fd, buf, sizeof buf)) > 0) {
+		for (ssize_t i = 0; i < n; i++) {
+			uint8_t b = buf[i];
+
+			if (got == 0) {
+				if (b == RELAY_SYNC) frame[got++] = b;
+				continue;
+			}
+			frame[got++] = b;
+			if (got == 3) {
+				want = b;
+				if (want > 8) got = 0;
+			} else if (got == (uint8_t)(want + 4)) {
+				uint8_t sum = 0;
+				for (uint8_t k = 1; k < got - 1; k++) sum ^= frame[k];
+				if (sum == frame[got - 1] && frame[1] == RELAY_FFB && want == DFGT_CMD_LEN) {
+					uint8_t out[DFGT_CMD_LEN];
+					memcpy(out, frame + 3, DFGT_CMD_LEN);
+					if (c->dev && IOHIDDeviceSetReport(c->dev, kIOHIDReportTypeOutput, 0,
+					                                   out, DFGT_CMD_LEN) == kIOReturnSuccess)
+						report_ffb(out);
+				}
+				got = 0;
+			}
+		}
+	}
+}
+
+/* Start from the wheel's *current* element values, so the board does not have to wait for
+   the wheel to move before it shows anything (the wheel only reports on change). */
+static void relay_prime(struct dfgt_ctx *c)
+{
+	CFArrayRef elems = IOHIDDeviceCopyMatchingElements(c->dev, NULL, kIOHIDOptionsTypeNone);
+	uint8_t r[8] = { 0x08, 0x00, 0x00, 0x7e, 0x00, 0x20, 0xff, 0xff };
+	unsigned hat = 8, buttons = 0, steer = DFGT_CENTER, thr = 0xff, brk = 0xff, v7 = 0x3f, v2 = 0;
+	int vendor_seen = 0;
+
+	for (CFIndex i = 0; elems && i < CFArrayGetCount(elems); i++) {
+		IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(elems, i);
+		IOHIDValueRef v = NULL;
+		unsigned page = (unsigned)IOHIDElementGetUsagePage(e);
+		unsigned usage = (unsigned)IOHIDElementGetUsage(e);
+		long val;
+
+		if (IOHIDElementGetReportCount(e) == 0) continue;
+		if (IOHIDDeviceGetValue(c->dev, e, &v) != kIOReturnSuccess || !v) continue;
+		val = (long)IOHIDValueGetIntegerValue(v);
+		/* IOHIDDeviceGetValue hands back a reference we do NOT own - releasing it is an
+		   over-release that segfaults once the memory is reused (it did, at 50 Hz). */
+		if (page == 0x01 && usage == 0x39) hat = (unsigned)val;
+		else if (page == 0x09 && usage >= 1 && usage <= 21) { if (val) buttons |= 1u << (usage - 1); }
+		else if (page == 0x01 && usage == 0x30) steer = (unsigned)val;
+		else if (page == 0x01 && usage == 0x31) thr = (unsigned)val;
+		else if (page == 0x01 && usage == 0x32) brk = (unsigned)val;
+		else if (page == 0xff00 && usage == 0x01) {
+			if (vendor_seen++ == 0) v7 = (unsigned)val & 0x7f;
+			else v2 = (unsigned)val & 0x03;
+		}
+	}
+	if (elems) CFRelease(elems);
+
+	r[0] = (uint8_t)((hat & 0x0f) | ((buttons & 0x0f) << 4));
+	r[1] = (uint8_t)((buttons >> 4) & 0xff);
+	r[2] = (uint8_t)((buttons >> 12) & 0xff);
+	r[3] = (uint8_t)(((buttons >> 20) & 1) | ((v7 & 0x7f) << 1));
+	r[4] = (uint8_t)(steer & 0xff);
+	r[5] = (uint8_t)(((steer >> 8) & 0x3f) | ((v2 & 0x03) << 6));
+	r[6] = (uint8_t)(thr & 0xff);
+	r[7] = (uint8_t)(brk & 0xff);
+	memcpy(c->relay_state, r, 8);
+}
+
+static int serial_open(const char *path)
+{
+	struct termios tio;
+	int fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+
+	if (fd < 0) return -1;
+	if (tcgetattr(fd, &tio) == 0) {
+		cfmakeraw(&tio);
+		cfsetispeed(&tio, B115200);
+		cfsetospeed(&tio, B115200);
+		tio.c_cflag |= (CLOCAL | CREAD);
+		tio.c_cflag &= ~CRTSCTS;
+		tio.c_cc[VMIN] = 0;
+		tio.c_cc[VTIME] = 0;
+		(void)tcsetattr(fd, TCSANOW, &tio);
+	}
+	{	/* never hold the board's EN/GPIO0 lines - that is its auto-reset circuit */
+		int bits = TIOCM_DTR | TIOCM_RTS;
+		(void)ioctl(fd, TIOCMBIC, &bits);
+	}
+	return fd;
+}
+
+static int cmd_relay(int argc, char **argv)
+{
+	const char *port = NULL;
+	char line[80];
+
+	for (int i = 0; i < argc; i++)
+		if (!strcmp(argv[i], "--port") && i + 1 < argc) port = argv[++i];
+	if (!port) {
+		say("dfgt: relay needs the bridge port: --port /dev/cu.usbmodemXXXX");
+		say("      (it is the board's UART bridge / flashing port, not the HID one)");
+		return 2;
+	}
+
+	C.writable = 0;		/* the cloud drives the wheel's settings; do not fight it */
+	C.quiet_startup = 1;
+	C.quiet_report = 2;		/* the relay prints its own, decoded output */
+	C.relay_fd = serial_open(port);
+	if (C.relay_fd < 0) { say("dfgt: cannot open %s", port); return 1; };
+	if (hid_start(&C) < 0) return 1;
+	if (wait_for_device(&C, 3.0) < 0) {
+		say("dfgt: no wheel at %04x:%04x", C.vid, C.pid);
+		return 1;
+	}
+	signal(SIGINT, on_signal);
+	signal(SIGTERM, on_signal);
+
+	relay_prime(&C);
+	snprintf(line, sizeof line, "dfgt relay: %04x:%04x <-> %s", DFGT_VID, DFGT_PID, port);
+	printf("%s\n", line);
+	printf("  streaming wheel state to the board; forwarding its FFB to the wheel\n");
+	fflush(stdout);
+
+	while (!C.stop) {
+		/* Poll the wheel's elements instead of waiting for its input reports. A second client
+		   can take report delivery away from us (Steam reads this wheel too, and so does every
+		   `dfgt probe`), which silently freezes the state the game sees. Direct element reads
+		   cannot be taken away. */
+		if (now_ms() - C.relay_poll_ms >= 20) {
+			C.relay_poll_ms = now_ms();
+			relay_prime(&C);
+			if (memcmp(C.relay_state, C.relay_sent, 8) != 0)
+				C.relay_dirty = 1;
+		}
+		if (C.relay_dirty || now_ms() - C.relay_sent_ms > RELAY_KEEPALIVE_MS) {
+			relay_send_frame(C.relay_fd, RELAY_STATE, C.relay_state, 8);
+			memcpy(C.relay_sent, C.relay_state, 8);
+			C.relay_dirty = 0;
+			C.relay_sent_ms = now_ms();
+		}
+		relay_poll_serial(&C);
+
+		/* A periodic one-liner so a human can see the state is live and moving. */
+		if (now_ms() - C.relay_status_ms >= 2000) {
+			C.relay_status_ms = now_ms();
+			printf("state: steer=%u throttle_raw=%u brake_raw=%u\n",
+			       (unsigned)(C.relay_state[4] | ((C.relay_state[5] & 0x3f) << 8)),
+			       C.relay_state[6], C.relay_state[7]);
+			fflush(stdout);
+		}
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.005, false);
+	}
+	printf("\ndfgt relay: stopped (the board falls back to its own neutral state)\n");
+	return 0;
 }
 
 static int cmd_daemon(int argc, char **argv)
@@ -1212,6 +1451,7 @@ static void usage(void)
 	"  dfgt mode <name> [--force]                re-enumerate as dfex|dfp|g25|dfgt|g27|g29\n"
 	"  dfgt native                               alias for: dfgt mode dfgt\n"
 	"  dfgt daemon [--range D] [--autocenter M]   keep the wheel alive + serve the socket\n"
+	"  dfgt relay --port /dev/…                   bridge the real wheel and the G29 impersonator\n"
 	"  dfgt status                               print current wheel state\n"
 	"  dfgt selftest [--fixture FILE]            regression checks\n"
 	"\n"
@@ -1254,6 +1494,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "probe"))    return cmd_probe(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "watch"))    return cmd_watch(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "native"))   return cmd_native();
+	if (!strcmp(argv[1], "relay"))    return cmd_relay(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "modes"))    return cmd_modes();
 	if (!strcmp(argv[1], "mode"))     return cmd_mode(argc > 2 ? argv[2] : "dfgt",
 	                                                   argc > 3 && !strcmp(argv[3], "--force"));

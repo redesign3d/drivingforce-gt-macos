@@ -42,6 +42,73 @@ static const uint8_t kRebootMagic[7] = { 'R', 'E', 'B', 'O', 'O', 'T', '!' };
    the class that uses it. */
 static volatile uint8_t g_ffb_count = 0;
 
+/* Relay protocol over UART0 (the CH343 bridge port) - see docs/geforce-now.md.
+   Frames: 0xA5 <type> <len> <payload...> <xor of type, len and payload>.
+   Log lines are plain ASCII, so the sync byte can never appear in them: the host scans
+   for 0xA5 and treats everything else as log noise.
+     'S' state: 8 bytes, the input report the board should emit   (Mac -> board)
+     'F' ffb:   7 bytes, an output report the host just sent us   (board -> Mac)   */
+#define RELAY_SYNC 0xA5
+#define RELAY_STATE 'S'
+#define RELAY_FFB 'F'
+#define RELAY_MAX_PAYLOAD 8
+
+static uint8_t  relay_state[8] = { 0x08, 0x00, 0x00, 0x3e, 0x00, 0x20, 0xff, 0xff };
+static uint32_t relay_last_ms = 0;
+
+/* The Mac is only considered in charge while it keeps sending state frames. */
+static bool relay_active(void)
+{
+    return relay_last_ms != 0 && (millis() - relay_last_ms) < 1000;
+}
+
+static void relay_send(uint8_t type, const uint8_t *payload, uint8_t len)
+{
+    uint8_t sum = (uint8_t)(type ^ len);
+
+    Serial.write(RELAY_SYNC);
+    Serial.write(type);
+    Serial.write(len);
+    for (uint8_t i = 0; i < len; i++) {
+        Serial.write(payload[i]);
+        sum ^= payload[i];
+    }
+    Serial.write(sum);
+}
+
+/* Non-blocking frame parser; anything that is not a valid frame is dropped. */
+static void relay_poll(void)
+{
+    static uint8_t frame[RELAY_MAX_PAYLOAD + 4];
+    static uint8_t got = 0;
+    static uint8_t want = 0;
+
+    while (Serial.available() > 0) {
+        uint8_t b = (uint8_t)Serial.read();
+
+        if (got == 0) {
+            if (b == RELAY_SYNC) {
+                frame[got++] = b;
+                want = 0;
+            }
+            continue;
+        }
+        frame[got++] = b;
+        if (got == 3) {
+            want = b;
+            if (want > RELAY_MAX_PAYLOAD) got = 0;
+        } else if (got == (uint8_t)(want + 4)) {
+            uint8_t sum = 0;
+            for (uint8_t i = 1; i < got - 1; i++) sum ^= frame[i];
+            if (sum == frame[got - 1] && frame[1] == RELAY_STATE && want == 8) {
+                memcpy(relay_state, frame + 3, 8);
+                relay_last_ms = millis();
+            }
+            got = 0;
+        }
+    }
+}
+
 class WheelHID : public USBHIDDevice {
 public:
     WheelHID() {
@@ -79,6 +146,24 @@ public:
 private:
     static void dump(const char *what, uint8_t report_id, const uint8_t *buf, uint16_t len) {
         g_ffb_count++;
+
+        /* Host asked for bootloader mode? Has to work even in the middle of a relay. */
+        if (len == sizeof kRebootMagic && memcmp(buf, kRebootMagic, sizeof kRebootMagic) == 0) {
+            printf("      -> host asked for bootloader mode; rebooting\n");
+            fflush(stdout);
+            delay(50);
+#ifdef RTC_CNTL_FORCE_DOWNLOAD_BOOT
+            REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+#endif
+            esp_restart();
+        }
+
+        /* While relaying, the wire carries frames only - the daemon logs them on the Mac. */
+        if (relay_active()) {
+            relay_send(RELAY_FFB, buf, (uint8_t)(len > RELAY_MAX_PAYLOAD ? RELAY_MAX_PAYLOAD : len));
+            return;
+        }
+
         printf("[ffb] %s id=%u len=%u (total %u):", what, report_id, len, g_ffb_count);
         for (uint16_t i = 0; i < len; i++) {
             printf(" %02x", buf[i]);
@@ -93,27 +178,26 @@ private:
         } else if (len >= 1 && (buf[0] == 0x14 || buf[0] == 0xf5 || buf[0] == 0x13)) {
             printf("      -> lg4ff force/autocenter enable or disable\n");
         }
-        if (len == sizeof kRebootMagic && memcmp(buf, kRebootMagic, sizeof kRebootMagic) == 0) {
-            printf("      -> host asked for bootloader mode; rebooting\n");
-            fflush(stdout);
-            delay(50);
-#ifdef RTC_CNTL_FORCE_DOWNLOAD_BOOT
-            REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-#endif
-            esp_restart();
-        }
     }
 };
 
 static WheelHID wheel;
 
-/* Neutral 8-byte state, exactly what a real DFGT sends at rest: hat centred (8), no
-   buttons, steering at 8192, pedals released (0xff). The vendor bits carry the FFB
-   counter instead of the wheel's constant 0x3f: 0 = nothing received yet. */
-static void send_neutral_state()
+/* The input report the host reads. While the Mac is relaying it owns these bytes
+   verbatim (so the real wheel's state, or whatever it sends, goes straight through);
+   otherwise the board streams a neutral DFGT state with the FFB counter in the unused
+   vendor bits - which doubles as the cable-free "is the cloud sending FFB?" readout. */
+static void send_input_state()
 {
-    uint8_t count = g_ffb_count & 0x7f;
-    uint8_t state[8] = { 0x08, 0x00, 0x00, (uint8_t)(count << 1), 0x00, 0x20, 0xff, 0xff };
+    uint8_t state[8];
+
+    if (relay_active()) {
+        memcpy(state, relay_state, sizeof state);
+    } else {
+        uint8_t count = g_ffb_count & 0x7f;
+        const uint8_t neutral[8] = { 0x08, 0x00, 0x00, (uint8_t)(count << 1), 0x00, 0x20, 0xff, 0xff };
+        memcpy(state, neutral, sizeof state);
+    }
     if (!HID.SendReport(0, state, sizeof state)) {
         printf("[hid] SendReport failed (host not reading?)\n");
         fflush(stdout);
@@ -122,7 +206,8 @@ static void send_neutral_state()
 
 void setup()
 {
-    delay(300);  /* no Serial.begin(): the IDF console on UART0 is up from boot */
+    Serial.begin(115200);  /* UART0 RX for the relay protocol; logs go out via printf */
+    delay(300);
     printf("\ng29-gadget: presenting 046d:c24f \"G29 Driving Force Racing Wheel\"\n");
     printf("report descriptor: %u bytes (DFGT's, captured from the real wheel)\n",
            (unsigned)sizeof(wheel_report_descriptor));
@@ -150,11 +235,13 @@ void loop()
 
     if (millis() - last_report >= 50) {  /* 20 Hz: enough for a wheel state */
         last_report = millis();
-        send_neutral_state();
+        send_input_state();
     }
+    relay_poll();
     if (millis() - last_beat >= 2000) {  /* keep the log readable */
         last_beat = millis();
-        printf("[hid] neutral state streaming (%lus up, ffb reports received: %u)\n",
+        printf("[hid] %s (%lus up, ffb reports received: %u)\n",
+               relay_active() ? "relaying the Mac's state" : "neutral state streaming",
                (unsigned long)(millis() / 1000), g_ffb_count);
         fflush(stdout);
     }
