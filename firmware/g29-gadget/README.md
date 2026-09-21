@@ -59,6 +59,23 @@ Two ways back into the ROM bootloader:
 Once the ROM is waiting, `/dev/cu.usbmodem*` reappears and flashing works. Logs go to **UART0** (the
 CH343 bridge port) through the ESP-IDF console, so that cable is needed only when you want the text.
 
+### Getting back into download mode without buttons
+
+If the BOOT/RESET sequence does not take (GPIO0 has to be low *at* the reset, which is easy to miss),
+the CH343 bridge can do it deterministically: its DTR/RTS lines are wired to EN/GPIO0, which is why
+esptool can reset the chip there. That bridge cannot *write* flash on this board, but it can *enter*
+download mode - and in download mode the ROM brings the native USB-Serial-JTAG port back:
+
+```sh
+# 1. enter download mode over the UART bridge and leave the chip waiting (--after no_reset)
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem<CH343> --before default_reset --after no_reset flash_id
+# 2. the native port re-enumerates; flash over it
+cd firmware/g29-gadget && pio run -t upload --upload-port /dev/cu.usbmodem<native>
+```
+
+**Both cables are needed** for this (the bridge to reset, the native port to flash). Once the current
+firmware is in, neither is needed again: the `REBOOT!` magic report above does step 1.
+
 **Checking the decisive question with no serial cable at all:** the input report's unused vendor bits
 carry the number of force-feedback reports received (0 = none yet), so FFB arriving during a GFN
 session can be read straight off the device from the Mac:
