@@ -30,9 +30,24 @@ that merely claims to be a G29. Every incoming report is dumped to UART0 as
       -> lg4ff set range 900 deg
 ```
 
-Any `[ffb]` line during a streaming session means the whitelist is identity-only and the whole
-approach is viable. No output at all means GFN's wheel path needs something else (a real G-Series
-descriptor, or Logitech's own driver present).
+### Verified so far
+
+| check | result |
+|---|---|
+| macOS sees the identity | ✅ `046d:c24f` "G29 Driving Force Racing Wheel", the 115-byte DFGT descriptor, and GFN and Steam both hold HID clients on it |
+| host → device force feedback | ✅ sending `11 08 94 80 …` then `13 00 …` from the Mac moves the counter `0x01 → 0x02 → 0x03` |
+| anything streaming FFB by itself | ❌ quiet across 10 s idle (a single report arrives when a client opens the device) |
+| **does a GFN session send wheel FFB?** | ⏳ the decisive one — watch the counter during a session |
+
+Watch it with (an explicit `--pid` bypasses the daemon, so this addresses the board directly):
+
+```sh
+./build/dfgt --pid 0xc24f watch        # vendor7 = FFB reports received, so far
+```
+
+Any counter movement (or `[ffb]` line in the UART log) during a streaming session means the whitelist
+is identity-only and the whole approach is viable. Nothing at all means GFN's wheel path needs more
+than identity — a genuine G-Series descriptor, or Logitech's own driver present.
 
 ## Build, flash, watch
 

@@ -236,6 +236,7 @@ struct dfgt_ctx {
 	unsigned	range;
 	unsigned	autocenter;
 	unsigned	vid, pid;	/* identity to match: personas change the PID */
+	int		addr_override;	/* --vid/--pid given: never route through the daemon */
 
 	int		listen_fd;
 	struct conn	conns[DFGT_MAX_CONNS];
@@ -930,6 +931,10 @@ static int dispatch_control_command(int argc, char **argv)
 	for (int i = 2; i < argc; i++)
 		p += (size_t)snprintf(line + p, sizeof line - p, " %s", argv[i]);
 
+	/* An explicit identity (--vid/--pid) means the caller is addressing a device the daemon does
+	   not know about - the ESP32 posing as a G29, say - so never route those through the socket. */
+	if (C.addr_override) return cmd_ffb_direct(line);
+
 	if (send_via_daemon(sock, line, reply, sizeof reply) == 0) {
 		if (!strncmp(reply, "ok", 2)) { printf("%s\n", ok_payload(reply)); return 0; }
 		say("dfgt: %s", reply);
@@ -1231,10 +1236,12 @@ int main(int argc, char **argv)
 		for (int i = 1; i < argc && n < 31; i++) {
 			if (!strcmp(argv[i], "--vid") && i + 1 < argc) {
 				C.vid = (unsigned)strtoul(argv[++i], NULL, 0);
+				C.addr_override = 1;
 				continue;
 			}
 			if (!strcmp(argv[i], "--pid") && i + 1 < argc) {
 				C.pid = (unsigned)strtoul(argv[++i], NULL, 0);
+				C.addr_override = 1;
 				continue;
 			}
 			filtered[n++] = argv[i];
