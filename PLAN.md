@@ -213,6 +213,9 @@ Physical:
   may break — but the wheel still works as a plain joystick without it.
 - **Prior art is GPL** (`logiwheel2000`, Linux `hid-lg4ff`). Protocol facts were reimplemented from
   the reference; no code was copied.
+- **Streaming (GeForce NOW) is a separate constraint.** GFN's force-feedback wheel support is a
+  whitelist (G29/G920/G923/PRO) and the DFGT is not on it; the client carries no extendable wheel
+  table (3960-entry controller DB, zero wheels). See `docs/geforce-now.md`.
 
 ---
 

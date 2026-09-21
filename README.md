@@ -10,7 +10,9 @@ force-feedback protocol, reimplemented from the Linux `hid-lg4ff` driver.
   mods and emulators.
 
 It cannot make a game read a wheel it does not support — macOS already exposes the wheel as a plain
-joystick (usage 1/4), which SDL2/3 and HID-aware games pick up on their own.
+joystick (usage 1/4), which SDL2/3 and HID-aware games pick up on their own. Streaming is a separate
+story: GeForce NOW's force-feedback wheel support is a whitelist (G29/G920/G923/PRO) that the DFGT is
+not on — see [docs/geforce-now.md](docs/geforce-now.md).
 
 ## Install
 
