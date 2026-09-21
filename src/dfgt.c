@@ -242,8 +242,8 @@ struct dfgt_ctx {
 
 	/* relay mode: the identity bridge on a serial port, and the state to stream to it */
 	int		relay_fd;
-	uint8_t		relay_state[9];
-	uint8_t		relay_sent[9];
+	uint8_t		relay_state[12];
+	uint8_t		relay_sent[12];
 	int		relay_dirty;
 	uint64_t	relay_sent_ms;
 	uint64_t	relay_poll_ms;
@@ -1033,12 +1033,14 @@ static void relay_poll_serial(struct dfgt_ctx *c)
 			frame[got++] = b;
 			if (got == 3) {
 				want = b;
-				if (want > 12) got = 0;
+				if (want > 20) got = 0;
 			} else if (got == (uint8_t)(want + 4)) {
 				uint8_t sum = 0;
 				for (uint8_t k = 1; k < got - 1; k++) sum ^= frame[k];
-				if (sum == frame[got - 1] && frame[1] == RELAY_FFB && want == DFGT_CMD_LEN) {
+				if (sum == frame[got - 1] && frame[1] == RELAY_FFB && want >= DFGT_CMD_LEN) {
 					uint8_t out[DFGT_CMD_LEN];
+					/* The G29 profile declares a 16-byte output report, so the board may hand us
+					   more than the 7-byte lg4ff command; the wheel wants exactly those 7. */
 					memcpy(out, frame + 3, DFGT_CMD_LEN);
 					if (c->dev && IOHIDDeviceSetReport(c->dev, kIOHIDReportTypeOutput, 0,
 					                                   out, DFGT_CMD_LEN) == kIOReturnSuccess)
@@ -1055,7 +1057,8 @@ static void relay_poll_serial(struct dfgt_ctx *c)
 static void relay_prime(struct dfgt_ctx *c)
 {
 	CFArrayRef elems = IOHIDDeviceCopyMatchingElements(c->dev, NULL, kIOHIDOptionsTypeNone);
-	uint8_t r[9] = { 0x08, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff };
+	/* r[9..11] keep the initialiser's reference-profile vendor defaults (0x81, 0x80, 0x9c). */
+	uint8_t r[12] = { 0x08, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0x81, 0x80, 0x9c };
 	unsigned hat = 8, buttons = 0, steer = DFGT_CENTER, thr = 0xff, brk = 0xff;
 
 	for (CFIndex i = 0; elems && i < CFArrayGetCount(elems); i++) {
@@ -1078,9 +1081,10 @@ static void relay_prime(struct dfgt_ctx *c)
 	}
 	if (elems) CFRelease(elems);
 
-	/* Assemble the G29-shaped report the cloud parses: buttons in bytes 0..3, steering
-	   16-bit at 4..5 (the DFGT's 14-bit axis scaled by four, so centre 8192 -> 32768),
-	   then the three pedals. The DFGT has no clutch, so that byte stays released. */
+	/* Assemble the report the GFN-accepted G29 profile expects: buttons in bytes 0..3,
+	   steering 16-bit at 4..5 (the DFGT's 14-bit axis scaled by four, so centre 8192 ->
+	   32768), then accelerator (Z), brake (Rz) and clutch (Y) at 6..8, and the vendor bits
+	   in byte 9 as the reference profile defaults them. The DFGT has no clutch. */
 	unsigned steer16 = ((steer & 0x3fff) * 4) & 0xffff;
 	r[0] = (uint8_t)((hat & 0x0f) | ((buttons & 0x0f) << 4));
 	r[1] = (uint8_t)((buttons >> 4) & 0xff);
@@ -1088,10 +1092,10 @@ static void relay_prime(struct dfgt_ctx *c)
 	r[3] = (uint8_t)((buttons >> 20) & 0x1f);
 	r[4] = (uint8_t)(steer16 & 0xff);
 	r[5] = (uint8_t)(steer16 >> 8);
-	r[6] = (uint8_t)(thr & 0xff);
-	r[7] = (uint8_t)(brk & 0xff);
-	r[8] = 0xff;
-	memcpy(c->relay_state, r, 9);
+	r[6] = (uint8_t)(thr & 0xff);	/* Z  = accelerator */
+	r[7] = (uint8_t)(brk & 0xff);	/* Rz = brake */
+	r[8] = 0xff;			/* Y  = clutch (the DFGT has none) */
+	memcpy(c->relay_state, r, 12);
 }
 
 static int serial_open(const char *path)
@@ -1157,12 +1161,12 @@ static int cmd_relay(int argc, char **argv)
 		if (now_ms() - C.relay_poll_ms >= 20) {
 			C.relay_poll_ms = now_ms();
 			relay_prime(&C);
-			if (memcmp(C.relay_state, C.relay_sent, 9) != 0)
+			if (memcmp(C.relay_state, C.relay_sent, 12) != 0)
 				C.relay_dirty = 1;
 		}
 		if (C.relay_dirty || now_ms() - C.relay_sent_ms > RELAY_KEEPALIVE_MS) {
-			relay_send_frame(C.relay_fd, RELAY_STATE, C.relay_state, 9);
-			memcpy(C.relay_sent, C.relay_state, 9);
+			relay_send_frame(C.relay_fd, RELAY_STATE, C.relay_state, 12);
+			memcpy(C.relay_sent, C.relay_state, 12);
 			C.relay_dirty = 0;
 			C.relay_sent_ms = now_ms();
 		}
