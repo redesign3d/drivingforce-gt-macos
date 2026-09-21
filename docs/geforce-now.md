@@ -186,7 +186,7 @@ which differs in ways that matter:
 | steering | bytes 4-5, **16-bit, centre 32768** | bytes 4-5, **14-bit, centre 8192** ❌ (centre reads as ~12% = hard left) |
 | throttle / brake | bytes 6 / 7, uint8, idle 255 | the same ✅ |
 | clutch | **byte 8** | **absent** - the report ran one byte short ❌ |
-| `bcdDevice` | 0x1350 (Linux's lg4ff ident mask) | whatever the stack defaults to ❌ |
+| `bcdDevice` | 0x1350 (Linux's lg4ff ident mask, and the only value macOS will attach to: at 0x8900 - the value the Windows virtual-G29 profile reports - the device enumerates but no `IOUSBHostInterface` is ever created, so nothing reads our reports) | whatever the stack defaults to ❌ |
 
 Our fake device now presents a G29-shaped wheel: `tools/make_g29_descriptor.py` generates a
 *9-byte* input report (hat + 25 buttons in bytes 0-3, steering 16-bit at 4-5, throttle 6, brake 7,
