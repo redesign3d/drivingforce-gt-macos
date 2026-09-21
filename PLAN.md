@@ -12,7 +12,7 @@
 | M5 | packaging | ✅ `make install` / `make uninstall` |
 
 L1 ("feels alive") is delivered: native mode, 40–900° range, self-centring spring, no kext/root.
-L2 (socket API) is delivered. L3 (appear native to unmodified games) is not attempted — see gate G1.
+L2 (socket API) is delivered. L3 (appear native to unmodified games) is **blocked**, see gate G1.
 
 ---
 
@@ -22,7 +22,7 @@ L2 (socket API) is delivered. L3 (appear native to unmodified games) is not atte
 |---|---|---|---|
 | **L1** | Daemon sets native mode, range, autocenter spring. | Any game reading the joystick gets a wheel that resists and self-centres. | ✅ |
 | **L2** | Line-based socket: decoded state out, FFB commands in. | Telemetry plugins/mods/emulators can drive real FFB. | ✅ |
-| **L3** | Virtual HID wheel so unmodified games see a FFB device. | Only if gate G1 passes. | ⏸ |
+| **L3** | Virtual HID wheel so unmodified games see a FFB device. | Needs an Apple-granted entitlement — see G1. | ❌ |
 
 ---
 
@@ -177,9 +177,23 @@ Physical:
 
 ## 7. Open questions / gates
 
-- **G1 (deferred): virtual HID device** for L3. `IOHIDResourceUserClient` entitlement-checks
-  (`com.apple.developer.hid.virtual.device`), so it likely needs root or an Apple-granted
-  entitlement. 30-minute spike if L3 is ever required; **do not** substitute keyboard/mouse emulation.
+- **G1 ❌ DECIDED (spike run: negative). L3 is not reachable from user space without an Apple-granted
+  entitlement.** `IOHIDUserDeviceCreate` is exported by IOKit.framework (but has no public header), so
+  it can be linked; creating a device is what fails:
+  - unsigned, unprivileged → returns NULL; kernel logs
+    `(IOHIDFamily) IOHIDResourceDeviceUserClient:0x0 vhid is not entitled`
+  - ad-hoc signed *with* `com.apple.hid.manager.user-access-device` → process **SIGKILLed**, and
+    `AMFI: code signature validation failed` in the log: restricted entitlements cannot be self-signed
+  - **root does not help**: `IOHIDResourceDeviceUserClient::initWithTask` (IOHIDFamily @02b1f53c)
+    checks only `com.apple.hid.manager.user-access-device` then
+    `com.apple.developer.hid.virtual.device` via `copyClientEntitlement`, with no uid fallback
+
+  Re-verify: build a 30-line program that calls `IOHIDUserDeviceCreate` with a
+  `kIOHIDReportDescriptorKey` + a vendor-page descriptor, then check `hidutil list` for it.
+  Remaining route = paid Developer Program + request the restricted entitlement + Developer ID +
+  notarisation (same user-client path, no dext required). Out of scope here.
+  **Consequence: unmodified games will never see this wheel, so L2 + a game-side telemetry plugin is
+  the only path to real force feedback in games.** Do not substitute keyboard/mouse emulation.
 - **G2 ✅ resolved:** reports are change-driven; effects persist (facts 2 and 3 above).
 - **G3 ✅** `vendor7`/`vendor2` explained (fact 8). No centre calibration needed: the wheel's rest
   position measured 8191–8210 across sessions, within ±0.2% of full scale of the 8192 nominal
