@@ -238,3 +238,22 @@ present and `bcdDevice = 0x1350`.
 For "the wheel, in full, with FH6 through GFN": use a whitelisted wheel. The streaming path exists
 and is supported; the DFGT is simply not part of it, and no client-side work changes that. Keep the
 DFGT with this driver for local macOS use, where it is the only thing that makes the wheel work at all.
+
+## Field notes from the macOS session (2026-09-21)
+
+- **The board's reports can stop leaving the device**, and it looks exactly like a broken relay.
+  When macOS leaves the ESP32's HID endpoint unread, the firmware logs
+  `[E][USBHID.cpp:346] SendReport(): not ready` continuously, while the relay keeps sending correct
+  state frames and the board keeps holding the right value. The host however keeps showing whatever
+  it last received, so in game the wheel sits frozen at centre and no pedal ever registers. The
+  failure is host-side: neither relay frames nor board state can clear it. A board reset (or
+  replugging the board) re-enumerates the device and fixes it. Seen after a long run of
+  flashing/re-enumerations, not in normal use.
+- **Keep the relay's keepalive below the board's window.** `relay_active()` on the board treats the
+  Mac as in charge for 1000 ms after the last valid state frame, then falls back to neutral;
+  `RELAY_KEEPALIVE_MS` in the relay is 200 ms. Raising it above 1000 would make the wheel snap to
+  centre between frames while still sending state.
+- **Logitech G HUB can run alongside this.** With G HUB active the fake G29 stays writable and keeps
+  tracking the real wheel, so its presence does not conflict with the relay or with report delivery.
+- **The wheel's range reverts to ~200 degrees on every replug**; `dfgt range 900` restores it (the
+  cloud's G29 preset assumes 900).
