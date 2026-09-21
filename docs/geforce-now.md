@@ -115,11 +115,26 @@ which is what made this test conclusive.)
    and a wheel-shaped report descriptor. GFN then sees a whitelisted wheel and enables wheel mode;
    the FFB it sends down is the shared `lg4ff` dialect this wheel already understands, so the proxy
    can largely forward it, while re-shaping the 8-byte input report into G29-shaped axes/buttons.
-   Needs a board with two independent USB roles (Pi 4/5, ESP32-P4) plus a small bridge daemon.
+   **Hardware check (ESP32-S3-WROOM-1 N16R8, Waveshare).** The S3 has a *single* USB PHY: the USB-OTG
+   peripheral and the USB-Serial/JTAG controller share the same D+/D- pins, so it cannot be host for
+   the wheel and device for the Mac at the same time — no transparent two-port proxy. It is still
+   right for a **relay** design, because these boards also carry a WCH UART bridge on its own USB port
+   (seen as `1a86:55d3`, `/dev/cu.usbmodem…`), giving a second, independent USB connection to the Mac:
+
+   ```text
+   [DFGT]--USB--[Mac]                    dfgt daemon keeps owning the real wheel
+                    |  native USB  ->   S3 presents HID 046d:c24f "G29 Driving Force Racing Wheel"
+                    +  UART bridge ->  S3 <-> daemon: wheel state out, FFB commands in
+   ```
+
+   Milestones: (1) the S3 presents that identity plus a wheel-shaped report descriptor with neutral
+   input, and we watch whether a GFN session starts sending wheel FFB to it — that is the decisive
+   test of the identity-only assumption, and it is machine-observable as HID output/SET_REPORT
+   traffic; (2) the relay (daemon streams wheel state to the S3, forwards received FFB to the wheel,
+   nearly 1:1 since the dialect is shared).
    Unverified assumption: that the whitelist is identity-only. No G HUB code exists in the client,
    which is why identity-only is the better bet — but if GFN's wheel path implicitly also needs
-   Logitech's driver present, a spoofed identity would not be enough. **This is the next thing to
-   test, and it needs hardware.**
+   Logitech's driver present, a spoofed identity would not be enough.
 
 ## Route matrix
 
