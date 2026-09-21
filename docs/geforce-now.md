@@ -66,6 +66,35 @@ suggests. **The hardware route to a whitelisted identity is closed.**
 Honest caveat: DF-EX/DFP were not exercised, so this shows the newer indices are ignored, not that
 the mode mechanism works on this unit. Either way, neither of those personas is on GFN's whitelist.
 
+## What the client actually does with this wheel (audited)
+
+- GFN holds the wheel open at **both** levels: a USB device user client and a HID client
+  (`IOHIDLibUserClient`, creator `pid …, GeForceNOW`). So its custom HID layer really does pick the
+  wheel up — it is not simply invisible.
+- Its input layer is a hand-rolled `IOHIDManager` stack (device matching, element parsing,
+  `IOHIDDeviceSetReport` for output) alongside SDL2, plus a joystick element-map / remap layer
+  (`JOYSTICK_parseElementMap`, `JOYSTICK_loadRemapInfo`, `JOYSTICK_dumpDeviceMapping`) and identity
+  fields (`vendorId`, `productId`, `productName`, `deviceId`, `controllerCategory`, `devicesConnected`).
+- The UI bundle carries a device-category enum containing **`WHEEL`** next to `X_INPUT_GAMEPAD`,
+  `DIRECT_INPUT_GAMEPAD`, `JOYSTICK`, `FLIGHT_CONTROLS`; it reports
+  `{inputDevice, manufacturer, versionNumber}`. So the protocol has a wheel concept — but nothing in
+  the client maps our wheel to it: **no wheel PIDs and no wheel names are compiled in**. Which
+  identity counts as a supported wheel is therefore decided outside the client (server-side list);
+  the client's part is only to report the device it sees.
+- The client *does* contain Logitech wheel command code — `f8 81 …` (range), `fe 0d …` (autocenter),
+  `f8 09 …` (mode switch), i.e. the same `lg4ff` dialect this wheel speaks — but no per-frame
+  constant-force shape, so torque most likely arrives as opaque bytes from the cloud.
+
+## Software levers on the macOS side (tested — closed)
+
+`hidutil property --set` accepts arbitrary properties for the wheel's HID *event service*
+(registry `1001e132a`): setting `Product` to "G29 Driving Force Racing Wheel", then `ProductID` to
+`0xc24f`, both reported success — and changed **nothing** that clients see. `IOHIDDeviceGetProperty`
+(the API GFN uses) still returned `Product = Driving Force GT`, the device still matched `046d:c29a`
+and did *not* answer as `c24f`. Identity comes from the USB descriptors, so no macOS-side property
+override can satisfy the whitelist. (`dfgt probe` now prints the identity exactly as clients see it,
+which is what made this test conclusive.)
+
 ## What is left for "the wheel in full"
 
 1. **A whitelisted wheel** (G29/G920/G923/PRO) — official path, force feedback, works today.
@@ -79,7 +108,18 @@ the mode mechanism works on this unit. Either way, neither of those personas is 
      the identity the client reports;
    one thing makes it hard: the input report layouts differ (different axis/button packing), so input
    would need translation — and it is a reverse-engineering effort against a closed-source app that
-   updates often.
+   updates often. **Ruled out by the owner: no GFN client modifications.**
+3. **A wheel-side USB proxy — the only route that spoofs identity without touching GFN.** A board that
+   is both USB host (for the wheel) and USB device (for the Mac) can present a G29 to macOS:
+   gadget HID with `idVendor=046d`, `idProduct=c24f`, product string "G29 Driving Force Racing Wheel"
+   and a wheel-shaped report descriptor. GFN then sees a whitelisted wheel and enables wheel mode;
+   the FFB it sends down is the shared `lg4ff` dialect this wheel already understands, so the proxy
+   can largely forward it, while re-shaping the 8-byte input report into G29-shaped axes/buttons.
+   Needs a board with two independent USB roles (Pi 4/5, ESP32-P4) plus a small bridge daemon.
+   Unverified assumption: that the whitelist is identity-only. No G HUB code exists in the client,
+   which is why identity-only is the better bet — but if GFN's wheel path implicitly also needs
+   Logitech's driver present, a spoofed identity would not be enough. **This is the next thing to
+   test, and it needs hardware.**
 
 ## Route matrix
 

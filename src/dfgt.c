@@ -698,6 +698,31 @@ static void dump_elements(IOHIDDeviceRef dev)
 	CFRelease(elems);
 }
 
+static const char *prop_str(IOHIDDeviceRef dev, CFStringRef key)
+{
+	static char buf[192];
+	CFTypeRef p = IOHIDDeviceGetProperty(dev, key);
+
+	if (!p) return "(none)";
+	if (CFGetTypeID(p) == CFStringGetTypeID()) {
+		if (!CFStringGetCString((CFStringRef)p, buf, sizeof buf, kCFStringEncodingUTF8))
+			snprintf(buf, sizeof buf, "(unprintable)");
+		return buf;
+	}
+	if (CFGetTypeID(p) == CFNumberGetTypeID()) {
+		long v = 0;
+		CFNumberGetValue((CFNumberRef)p, kCFNumberLongType, &v);
+		snprintf(buf, sizeof buf, "%ld (0x%lx)", v, (unsigned long)v);
+		return buf;
+	}
+	if (CFGetTypeID(p) == CFDataGetTypeID()) {
+		snprintf(buf, sizeof buf, "<data, %ld bytes>", (long)CFDataGetLength((CFDataRef)p));
+		return buf;
+	}
+	snprintf(buf, sizeof buf, "<cf type %lu>", (unsigned long)CFGetTypeID(p));
+	return buf;
+}
+
 static int cmd_probe(int argc, char **argv)
 {
 	uint8_t custom[DFGT_CMD_LEN];
@@ -722,10 +747,17 @@ static int cmd_probe(int argc, char **argv)
 	C.range = DFGT_RANGE_DEFAULT;
 	C.autocenter = 0;
 	if (hid_start(&C) < 0) return 1;
-	if (wait_for_device(&C, 2.0) < 0) { say("dfgt: 046d:c29a not found"); return 1; }
+	if (wait_for_device(&C, 2.0) < 0) { say("dfgt: no wheel at %04x:%04x", C.vid, C.pid); return 1; }
 
-	printf("device 046d:c29a%s\n", descriptor_is_native(C.dev) ? " (native mode)" : " (compat mode?)");
+	printf("device %04x:%04x%s\n", C.vid, C.pid,
+	       descriptor_is_native(C.dev) ? " (native mode)" : " (compat mode?)");
 	printf("report descriptor: 8B input (no report id), 7B vendor output 0xFF00/0x02, 131B feature\n");
+	printf("identity as other clients (GeForce NOW, Steam, games) see it:\n");
+	printf("  Product      = %s\n", prop_str(C.dev, CFSTR(kIOHIDProductKey)));
+	printf("  VendorID     = %s\n", prop_str(C.dev, CFSTR(kIOHIDVendorIDKey)));
+	printf("  ProductID    = %s\n", prop_str(C.dev, CFSTR(kIOHIDProductIDKey)));
+	printf("  SerialNumber = %s\n", prop_str(C.dev, CFSTR("SerialNumber")));
+	printf("  Transport    = %s\n", prop_str(C.dev, CFSTR(kIOHIDTransportKey)));
 	dump_elements(C.dev);
 	if (have_custom) {
 		dfgt_send(&C, custom, "raw");
@@ -749,7 +781,7 @@ static int cmd_watch(int argc, char **argv)
 	}
 	C.quiet_startup = 0;	/* log device add/remove, so the capture shows a replug */
 	if (hid_start(&C) < 0) return 1;
-	if (wait_for_device(&C, 2.0) < 0) { say("dfgt: 046d:c29a not found"); return 1; }
+	if (wait_for_device(&C, 2.0) < 0) { say("dfgt: no wheel at %04x:%04x", C.vid, C.pid); return 1; }
 	if (!C.quiet_report) {
 		printf("# move one control at a time; each line lists the fields that changed\n");
 		printf("# steer: 0..16383 (8192 centre)  throttle/brake: 255 = released  hat: 8 = centred\n");
