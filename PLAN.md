@@ -146,7 +146,8 @@ PLAN.md / README.md
   **Steering direction verified** (second capture, `tests/capture-turn-replug.hex`): turning fully
   left (counter-clockwise) drives `steer` to **0**, fully right (clockwise) to **16383** — rising
   reads clockwise/right, and the mechanical stops use the full 0..16383 span at range 900.
-- **M2 ✅** `dfgt ffb constant|off|autocenter|autocenter-off`, `dfgt range`, `dfgt native`.
+- **M2 ✅** `dfgt ffb constant|off|autocenter|autocenter-off`, `dfgt range`, `dfgt native`,
+  `dfgt modes` / `dfgt mode <persona>` (firmware multimode switching, `--vid/--pid` overrides).
   Byte builders are unit-tested against the Linux reference values in `dfgt selftest`.
 - **M3 ✅** `dfgt daemon` (single reader, settings owner, socket server, reconnect on replug,
   clean shutdown), `dfgt status`.

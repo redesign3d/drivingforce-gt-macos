@@ -163,16 +163,45 @@ static void cmd_range(unsigned deg, uint8_t c[DFGT_CMD_LEN])
 	c[4] = c[5] = c[6] = 0;
 }
 
-static void cmd_native_1(uint8_t c[DFGT_CMD_LEN])
+static void cmd_mode_revert_marker(uint8_t c[DFGT_CMD_LEN])
 {
 	const uint8_t v[DFGT_CMD_LEN] = { 0xf8, 0x0a, 0, 0, 0, 0, 0 };
 	memcpy(c, v, DFGT_CMD_LEN);
 }
 
-static void cmd_native_2(uint8_t c[DFGT_CMD_LEN])
+/* ------------------------------------------------------------------ personas
+ *
+ * Logitech's multimode wheels can be told to re-enumerate as a different model: first
+ * "revert mode upon USB reset" (f8 0a …, so a replug is always an escape), then
+ * f8 09 <idx> 01 …, after which the device detaches and comes back with the other
+ * model's USB PID (Linux identifies the current mode from the PID alone).
+ * Bytes from Linux hid-lg4ff.c (lg4ff_mode_switch_ext09_*). The kernel only offers
+ * DF-EX / DFP / DFGT for a DFGT; the newer ones are probes. */
+struct dfgt_persona {
+	const char	*name;
+	unsigned	 idx;
+	unsigned	 expect_pid;
+	const char	*note;
+};
+static const struct dfgt_persona dfgt_personas[] = {
+	{ "dfex", 0x00, 0xc294, "Driving Force (DF-EX): combined pedals, reduced range" },
+	{ "dfp",  0x01, 0xc298, "Driving Force Pro" },
+	{ "g25",  0x02, 0xc299, "G25" },
+	{ "dfgt", 0x03, 0xc29a, "Driving Force GT - native, what this driver targets" },
+	{ "g27",  0x04, 0xc29b, "G27" },
+	{ "g29",  0x05, 0xc24f, "G29 - the identity GeForce NOW whitelists" },
+};
+#define DFGT_PERSONA_DFGT	3
+
+static void cmd_mode_switch(unsigned idx, uint8_t c[DFGT_CMD_LEN])
 {
-	const uint8_t v[DFGT_CMD_LEN] = { 0xf8, 0x09, 0x03, 0x01, 0, 0, 0 };
-	memcpy(c, v, DFGT_CMD_LEN);
+	c[0] = 0xf8;
+	c[1] = 0x09;
+	c[2] = (uint8_t)idx;
+	c[3] = 0x01;
+	c[4] = (idx == 0x05) ? 0x01 : 0x00;	/* the G29 command carries an extra byte */
+	c[5] = 0x00;
+	c[6] = 0x00;
 }
 
 /* ----------------------------------------------------------------- helpers */
@@ -206,6 +235,7 @@ struct dfgt_ctx {
 
 	unsigned	range;
 	unsigned	autocenter;
+	unsigned	vid, pid;	/* identity to match: personas change the PID */
 
 	int		listen_fd;
 	struct conn	conns[DFGT_MAX_CONNS];
@@ -572,7 +602,7 @@ static void on_removed(void *ctx, IOReturn res, void *sender, IOHIDDeviceRef dev
 static int hid_start(struct dfgt_ctx *c)
 {
 	CFMutableDictionaryRef match;
-	int vid = DFGT_VID, pid = DFGT_PID;
+	int vid = (int)c->vid, pid = (int)c->pid;
 	CFNumberRef nv, np;
 
 	c->mgr = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
@@ -733,24 +763,62 @@ static int cmd_watch(int argc, char **argv)
 	return 0;
 }
 
-static int cmd_native(void)
+static int persona_index(const char *name)
 {
-	uint8_t c1[DFGT_CMD_LEN], c2[DFGT_CMD_LEN];
+	for (size_t i = 0; i < sizeof dfgt_personas / sizeof dfgt_personas[0]; i++)
+		if (!strcmp(dfgt_personas[i].name, name)) return (int)i;
+	return -1;
+}
 
-	C.quiet_startup = 1;
-	C.range = 0;			/* only the explicit mode switch below */
-	C.autocenter = 0;
+static int cmd_mode(const char *name, int force)
+{
+	uint8_t c[DFGT_CMD_LEN];
+	int idx = persona_index(name);
+
+	if (idx < 0) { say("dfgt: unknown persona '%s' (see: dfgt modes)", name); return 2; }
+	if (!force && idx != 0 && idx != 1 && idx != DFGT_PERSONA_DFGT) {
+		say("dfgt: the kernel does not offer '%s' for a DFGT (it may not exist in the "
+		    "firmware). Re-run with --force to probe anyway.", name);
+		return 2;
+	}
+	C.quiet_startup = 1;		/* writable stays 0: a mode switch must not touch settings */
 	if (hid_start(&C) < 0) return 1;
-	if (wait_for_device(&C, 2.0) < 0) { say("dfgt: 046d:c29a not found"); return 1; }
-	if (descriptor_is_native(C.dev)) {
-		printf("already in native mode (14-bit steering, separate pedals) — nothing to do\n");
+	if (wait_for_device(&C, 2.0) < 0) {
+		say("dfgt: no wheel at %04x:%04x (persona switched? use --pid)", C.vid, C.pid);
+		return 1;
+	}
+	if (idx == DFGT_PERSONA_DFGT && descriptor_is_native(C.dev)) {
+		printf("already in native mode (dfgt persona, 14-bit steering, separate pedals)\n");
 		return 0;
 	}
-	printf("switching to native mode; the wheel will detach and re-enumerate\n");
-	cmd_native_1(c1);
-	cmd_native_2(c2);
-	if (dfgt_send(&C, c1, "native revert-on-reset")) return 1;
-	return dfgt_send(&C, c2, "native switch") ? 1 : 0;
+	printf("switching to '%s' (expects pid %04x); the wheel detaches and re-enumerates.\n",
+	       name, dfgt_personas[idx].expect_pid);
+	cmd_mode_revert_marker(c);
+	if (dfgt_send(&C, c, "revert-marker")) return 1;
+	cmd_mode_switch(dfgt_personas[idx].idx, c);
+	if (dfgt_send(&C, c, "mode switch")) return 1;
+	printf("sent. If it does not come back as %04x: replug the wheel (the marker makes a USB\n"
+	       "reset revert the persona) or address the new identity with --pid 0x%04x.\n",
+	       dfgt_personas[idx].expect_pid, dfgt_personas[idx].expect_pid);
+	return 0;
+}
+
+static int cmd_modes(void)
+{
+	printf("personas: f8 09 <idx> 01 ... makes the wheel re-enumerate under a new USB PID\n");
+	for (size_t i = 0; i < sizeof dfgt_personas / sizeof dfgt_personas[0]; i++)
+		printf("  %-5s idx=0x%02x  pid %04x  %s%s\n", dfgt_personas[i].name,
+		       dfgt_personas[i].idx, dfgt_personas[i].expect_pid, dfgt_personas[i].note,
+		       (i == 0 || i == 1 || (int)i == DFGT_PERSONA_DFGT) ? "" : "   [needs --force]");
+	printf("\nGeForce NOW whitelists 046d:c24f (G29), c262 (G920), c26e (G923) and the PRO wheel.\n"
+	       "A 2007-era DFGT firmware is unlikely to carry a G29 persona; `dfgt mode g29` tests it.\n"
+	       "See docs/geforce-now.md.\n");
+	return 0;
+}
+
+static int cmd_native(void)
+{
+	return cmd_mode("dfgt", 1);
 }
 
 static int cmd_ffb_direct(const char *line)
@@ -986,6 +1054,11 @@ static void selftest_commands(void)
 	static const uint8_t ac_ffff[7]  = { 0xfe, 0x0d, 0x07, 0x07, 0xff, 0, 0 };
 	static const uint8_t nat1[7]     = { 0xf8, 0x0a, 0, 0, 0, 0, 0 };
 	static const uint8_t nat2[7]     = { 0xf8, 0x09, 0x03, 0x01, 0, 0, 0 };
+	static const uint8_t p_dfex[7]   = { 0xf8, 0x09, 0x00, 0x01, 0, 0, 0 };
+	static const uint8_t p_dfp[7]    = { 0xf8, 0x09, 0x01, 0x01, 0, 0, 0 };
+	static const uint8_t p_g25[7]    = { 0xf8, 0x09, 0x02, 0x01, 0, 0, 0 };
+	static const uint8_t p_g27[7]    = { 0xf8, 0x09, 0x04, 0x01, 0, 0, 0 };
+	static const uint8_t p_g29[7]    = { 0xf8, 0x09, 0x05, 0x01, 0x01, 0, 0 };
 
 	cmd_force_off(c);             expect_bytes("force_off", c, off);
 	cmd_constant(0, c);           expect_bytes("constant(0)", c, off);
@@ -1003,8 +1076,13 @@ static void selftest_commands(void)
 	cmd_autocenter(0, c);         expect_bytes("autocenter(0)", c, ac_off);
 	cmd_autocenter_off(c);        expect_bytes("autocenter_off", c, ac_off);
 	cmd_autocenter_activate(c);   expect_bytes("autocenter_activate", c, ac_on);
-	cmd_native_1(c);              expect_bytes("native_1", c, nat1);
-	cmd_native_2(c);              expect_bytes("native_2", c, nat2);
+	cmd_mode_revert_marker(c);    expect_bytes("mode_revert_marker", c, nat1);
+	cmd_mode_switch(0x03, c);     expect_bytes("mode_switch(dfgt)", c, nat2);
+	cmd_mode_switch(0x00, c);     expect_bytes("mode_switch(dfex)", c, p_dfex);
+	cmd_mode_switch(0x01, c);     expect_bytes("mode_switch(dfp)", c, p_dfp);
+	cmd_mode_switch(0x02, c);     expect_bytes("mode_switch(g25)", c, p_g25);
+	cmd_mode_switch(0x04, c);     expect_bytes("mode_switch(g27)", c, p_g27);
+	cmd_mode_switch(0x05, c);     expect_bytes("mode_switch(g29)", c, p_g29);
 }
 
 static int selftest_fixture(const char *path)
@@ -1062,27 +1140,53 @@ static void usage(void)
 	"  dfgt range <40..900>                      steering lock-to-lock range\n"
 	"  dfgt ffb constant <-128..127>|off         constant force (0 = off)\n"
 	"  dfgt ffb autocenter <0..65535>|off        self-centring spring\n"
-	"  dfgt native                               switch compat-mode wheel to native mode\n"
+	"  dfgt modes                                list firmware personas and their USB pids\n"
+	"  dfgt mode <name> [--force]                re-enumerate as dfex|dfp|g25|dfgt|g27|g29\n"
+	"  dfgt native                               alias for: dfgt mode dfgt\n"
 	"  dfgt daemon [--range D] [--autocenter M]   keep the wheel alive + serve the socket\n"
 	"  dfgt status                               print current wheel state\n"
 	"  dfgt selftest [--fixture FILE]            regression checks\n"
 	"\n"
 	"commands go to the daemon when one is running, otherwise straight to the wheel.\n"
-	"socket: $DFGT_SOCKET (default /tmp/dfgt-daemon.sock)\n");
+	"socket: $DFGT_SOCKET (default /tmp/dfgt-daemon.sock)\n"
+	"global: --vid 0x.. --pid 0x..             address a wheel that re-enumerated as another persona\n");
 }
 
 int main(int argc, char **argv)
 {
-	if (argc < 2) { usage(); return 2; }
 	/* a client that goes away mid-broadcast must not kill the daemon (default SIGPIPE) */
 	signal(SIGPIPE, SIG_IGN);
 	/* fd 0 is valid: never let a zero-initialised struct look like a connection */
 	C.listen_fd = -1;
 	for (int i = 0; i < DFGT_MAX_CONNS; i++) C.conns[i].fd = -1;
+	C.vid = DFGT_VID;
+	C.pid = DFGT_PID;
+	{   /* global --vid/--pid, so a wheel that switched persona stays reachable */
+		static char *filtered[32];
+		int n = 0;
+		filtered[n++] = argv[0];
+		for (int i = 1; i < argc && n < 31; i++) {
+			if (!strcmp(argv[i], "--vid") && i + 1 < argc) {
+				C.vid = (unsigned)strtoul(argv[++i], NULL, 0);
+				continue;
+			}
+			if (!strcmp(argv[i], "--pid") && i + 1 < argc) {
+				C.pid = (unsigned)strtoul(argv[++i], NULL, 0);
+				continue;
+			}
+			filtered[n++] = argv[i];
+		}
+		argc = n;
+		argv = filtered;
+	}
+	if (argc < 2) { usage(); return 2; }
 	if (!strcmp(argv[1], "help") || !strcmp(argv[1], "--help")) { usage(); return 0; }
 	if (!strcmp(argv[1], "probe"))    return cmd_probe(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "watch"))    return cmd_watch(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "native"))   return cmd_native();
+	if (!strcmp(argv[1], "modes"))    return cmd_modes();
+	if (!strcmp(argv[1], "mode"))     return cmd_mode(argc > 2 ? argv[2] : "dfgt",
+	                                                   argc > 3 && !strcmp(argv[3], "--force"));
 	if (!strcmp(argv[1], "daemon"))   return cmd_daemon(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "status"))   return cmd_status(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "selftest")) return cmd_selftest(argc - 2, argv + 2);

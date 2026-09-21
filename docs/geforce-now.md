@@ -40,12 +40,53 @@ Read out of the app bundle, because "just patch the client" is the obvious next 
   *supported wheel's* protocol, and we cannot intercept the client's writes to the device (no HID
   filtering without a kext/dext — see PLAN gate G1).
 
+## Can the DFGT present itself as a G29 in hardware? (tested — no)
+
+Logitech's multimode wheels can be told to re-enumerate as another model: `f8 0a …`
+("revert mode upon USB reset", so a replug is always an escape) followed by `f8 09 <idx> 01 …`, after
+which the wheel comes back under the other model's USB PID — Linux identifies the current mode from
+the PID alone. This is now exposed as `dfgt modes` / `dfgt mode <name> [--force]`, with global
+`--vid/--pid` overrides so a switched wheel stays reachable.
+
+What this unit's firmware actually did:
+
+| persona | idx | expected pid | result |
+|---|---|---|---|
+| `dfex` | 0x00 | c294 | not exercised (a switch needs a replug to undo: from the DF-EX/DFP persona the wheel cannot be told to return to DFGT — only G27/G29 firmware can target DFGT) |
+| `dfp` | 0x01 | c298 | not exercised (same reason) |
+| `g25` | 0x02 | c299 | **ignored** — stayed at `c29a` |
+| `dfgt` | 0x03 | c29a | current persona (native) |
+| `g27` | 0x04 | c29b | **ignored** — stayed at `c29a` |
+| `g29` | 0x05 | c24f | **ignored** — stayed at `c29a` |
+
+So the firmware carries no G25/G27/G29 persona — exactly what Linux's policy table implies ("DFGT can
+only be switched to DF-EX, DFP or its native mode") and what a 2007 firmware versus a 2015 wheel
+suggests. **The hardware route to a whitelisted identity is closed.**
+
+Honest caveat: DF-EX/DFP were not exercised, so this shows the newer indices are ignored, not that
+the mode mechanism works on this unit. Either way, neither of those personas is on GFN's whitelist.
+
+## What is left for "the wheel in full"
+
+1. **A whitelisted wheel** (G29/G920/G923/PRO) — official path, force feedback, works today.
+2. **Patching the GFN client** so it reports a whitelisted identity for our wheel. There is community
+   precedent for modifying and locally re-signing the macOS client
+   (`mikeqwe/gfn-steam-controller-fix` routes Steam Input's virtual Xbox controller through GFN's HID
+   backend). Two things make it less hopeless than it sounds:
+   - the force-feedback command family is **shared**: the G29 and the DFGT both use the `lg4ff` 7-byte
+     vendor commands (`f8 81`, `fe 0d`, `11 08`, `14`/`f5`), so FFB may need little or no translation;
+   - the whitelist looks **server-side** (the client carries no wheel table), so the deciding input is
+     the identity the client reports;
+   one thing makes it hard: the input report layouts differ (different axis/button packing), so input
+   would need translation — and it is a reverse-engineering effort against a closed-source app that
+   updates often.
+
 ## Route matrix
 
 | wheel | input in streamed games | force feedback | notes |
 |---|---|---|---|
 | G29 / G920 / G923 / PRO | full wheel, officially supported | **yes** | needs G HUB installed + running; reported FH6 rotation tuning pain |
-| Driving Force GT | none by default — GFN has no mapping for it. Known workaround: masquerade as a gamepad via **Steam Input** (add GFN as a non-Steam game) | **no** — and no software route exists | community-confirmed for FH5 through GFN, explicitly without FFB/rumble |
+| Driving Force GT | none by default — GFN has no mapping for it, and no firmware persona gives it a whitelisted identity (tested above). Known workaround: masquerade as a gamepad via **Steam Input** (add GFN as a non-Steam game) | **no**, and no software route exists | community-confirmed for FH5 through GFN, explicitly without FFB/rumble |
 
 ## What this driver contributes in that setup
 
