@@ -1,0 +1,9 @@
+# ESP32/Arduino firmware: this directory is built with PlatformIO's xtensa-esp32s3
+# toolchain, which clangd cannot emulate - it is handed the Xtensa flags but has no such
+# target, so it reports false errors about Print/HardwareSerial resolution and unknown
+# -mlongcalls style options. Those artifacts would otherwise mask real problems elsewhere.
+#
+# The gate for this directory is the real build:
+#   cd firmware/g29-gadget && pio run
+Diagnostics:
+  Suppress: '*'

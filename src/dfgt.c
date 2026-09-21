@@ -723,14 +723,44 @@ static const char *prop_str(IOHIDDeviceRef dev, CFStringRef key)
 	return buf;
 }
 
+/* Read the current value of every input element: does not wait for a report, so it answers
+   "what is the state right now" (and whether the device is alive at all). Useful for the real
+   wheel too, where reports only arrive on change. */
+static void print_values(IOHIDDeviceRef dev)
+{
+	CFArrayRef elems = IOHIDDeviceCopyMatchingElements(dev, NULL, kIOHIDOptionsTypeNone);
+
+	printf("current values (read directly, not from a report):\n");
+	for (CFIndex i = 0; elems && i < CFArrayGetCount(elems); i++) {
+		IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(elems, i);
+		IOHIDElementType t = IOHIDElementGetType(e);
+		IOHIDValueRef v = NULL;
+
+		if (IOHIDElementGetReportCount(e) == 0) continue;
+		if (t != kIOHIDElementTypeInput_Misc && t != kIOHIDElementTypeInput_Button &&
+		    t != kIOHIDElementTypeInput_Axis) continue;
+		if (IOHIDDeviceGetValue(dev, e, &v) == kIOReturnSuccess && v) {
+			printf("    page=0x%04x usage=0x%02x value=%ld\n",
+			       (unsigned)IOHIDElementGetUsagePage(e),
+			       (unsigned)IOHIDElementGetUsage(e),
+			       (long)IOHIDValueGetIntegerValue(v));
+			CFRelease(v);
+		}
+	}
+	if (elems) CFRelease(elems);
+}
+
 static int cmd_probe(int argc, char **argv)
 {
 	uint8_t custom[DFGT_CMD_LEN];
 	size_t custom_len = 0;
 	int have_custom = 0;
+	int want_values = 0;
 
 	for (int i = 0; i < argc; i++) {
-		if (!strcmp(argv[i], "--cmd") && i + 1 < argc) {
+		if (!strcmp(argv[i], "--values")) {
+			want_values = 1;
+		} else if (!strcmp(argv[i], "--cmd") && i + 1 < argc) {
 			const char *h = argv[++i];
 			for (size_t j = 0; j + 1 < strlen(h) && custom_len < DFGT_CMD_LEN; j += 2) {
 				unsigned b;
@@ -758,7 +788,8 @@ static int cmd_probe(int argc, char **argv)
 	printf("  ProductID    = %s\n", prop_str(C.dev, CFSTR(kIOHIDProductIDKey)));
 	printf("  SerialNumber = %s\n", prop_str(C.dev, CFSTR("SerialNumber")));
 	printf("  Transport    = %s\n", prop_str(C.dev, CFSTR(kIOHIDTransportKey)));
-	dump_elements(C.dev);
+	if (want_values) print_values(C.dev);
+	else dump_elements(C.dev);
 	if (have_custom) {
 		dfgt_send(&C, custom, "raw");
 	} else {
@@ -1167,7 +1198,7 @@ static void usage(void)
 	printf(
 	"dfgt — Logitech Driving Force GT (046d:c29a) user-space driver\n"
 	"\n"
-	"  dfgt probe [--cmd HEX]                    dump elements, self-test output report\n"
+	"  dfgt probe [--cmd HEX] [--values]          elements / current values, identity, self-test\n"
 	"  dfgt watch [N] [--hex]                    live decoded input (control identification)\n"
 	"  dfgt range <40..900>                      steering lock-to-lock range\n"
 	"  dfgt ffb constant <-128..127>|off         constant force (0 = off)\n"

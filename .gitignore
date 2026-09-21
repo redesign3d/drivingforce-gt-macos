@@ -2,3 +2,4 @@ build/
 *.o
 .DS_Store
 .pio/
+compile_commands.json
