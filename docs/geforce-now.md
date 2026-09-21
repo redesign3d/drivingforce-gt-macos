@@ -136,12 +136,38 @@ which is what made this test conclusive.)
    which is why identity-only is the better bet — but if GFN's wheel path implicitly also needs
    Logitech's driver present, a spoofed identity would not be enough.
 
+## Result: the whitelist is identity-only — verified end to end (2026-09-21)
+
+The ESP32-S3 posing as `046d:c24f` — with the **Driving Force GT's own** report descriptor — is accepted
+by GeForce NOW as a Logitech G29, in the cloud as well as locally:
+
+- **FH5 (streamed through GFN) detects the wheel** and offers its "LOGITECH G29" wheel layout, with a
+  full preset bound to the device's actual elements: steering / clutch / accelerate / brake on axes
+  1-4, the hat as `SWITCH 1` up/down/left/right, and buttons up to 19 (gears 1-6 on 13-18, horn on
+  12, shift up on 5, reverse on 19).
+- **Force feedback arrives.** The firmware counts every FFB report it receives and reports the count
+  back in its input report's unused vendor bits: `0x04 -> 0x10` across the session — twelve wheel
+  commands from the cloud to a device that merely *claims* to be a G29. Over 10 s idle the counter
+  does not move, so the traffic is session-driven rather than client chatter.
+- The host→device path was verified separately: sending `11 08 94 80 …` then `13 00 …` from the Mac
+  moved the counter `0x01 -> 0x02 -> 0x03`.
+
+Two things follow for the relay:
+
+1. The FFB the cloud sends is the `lg4ff` dialect this wheel already speaks, so forwarding it to the
+   real Driving Force GT should be close to a pass-through (the same `f8 81` range, `fe 0d`/`14`
+   autocenter and `11 08`/`13` constant-force commands).
+2. The game's G29 preset expects **four axes in the order steering, clutch, throttle, brake**, while
+   the DFGT descriptor has three (X steering, Y throttle, Z brake). Because the relay synthesises the
+   input report, it can present whichever layout the preset expects — steering, empty clutch,
+   throttle, brake — and the default mapping then lines up with no remapping in-game.
+
 ## Route matrix
 
 | wheel | input in streamed games | force feedback | notes |
 |---|---|---|---|
 | G29 / G920 / G923 / PRO | full wheel, officially supported | **yes** | needs G HUB installed + running; reported FH6 rotation tuning pain |
-| Driving Force GT | none by default — GFN has no mapping for it, and no firmware persona gives it a whitelisted identity (tested above). Known workaround: masquerade as a gamepad via **Steam Input** (add GFN as a non-Steam game) | **no**, and no software route exists | community-confirmed for FH5 through GFN, explicitly without FFB/rumble |
+| Driving Force GT | **mapped as a G29** by the ESP32-S3 identity bridge — FH5 in GFN detects it and its wheel layout binds to the device's elements | **yes** — the cloud sends wheel FFB to the bridge (12 commands in one session) | milestone 2 forwards that FFB to the real wheel; the older workaround (gamepad via Steam Input, no FFB) is no longer needed |
 
 ## What this driver contributes in that setup
 

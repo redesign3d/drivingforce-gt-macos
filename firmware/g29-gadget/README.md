@@ -37,7 +37,7 @@ that merely claims to be a G29. Every incoming report is dumped to UART0 as
 | macOS sees the identity | ✅ `046d:c24f` "G29 Driving Force Racing Wheel", the 115-byte DFGT descriptor, and GFN and Steam both hold HID clients on it |
 | host → device force feedback | ✅ sending `11 08 94 80 …` then `13 00 …` from the Mac moves the counter `0x01 → 0x02 → 0x03` |
 | anything streaming FFB by itself | ❌ quiet across 10 s idle (a single report arrives when a client opens the device) |
-| **does a GFN session send wheel FFB?** | ⏳ the decisive one — watch the counter during a session |
+| **does a GFN session send wheel FFB?** | ✅ **yes** — `0x04 → 0x10` across one FH5 session (12 commands), and FH5 detected the device as "LOGITECH G29" with a full wheel preset bound to its axes, hat and buttons |
 
 Watch it with (an explicit `--pid` bypasses the daemon, so this addresses the board directly):
 
