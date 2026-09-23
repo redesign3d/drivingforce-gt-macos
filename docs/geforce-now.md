@@ -257,3 +257,12 @@ DFGT with this driver for local macOS use, where it is the only thing that makes
   tracking the real wheel, so its presence does not conflict with the relay or with report delivery.
 - **The wheel's range reverts to ~200 degrees on every replug**; `dfgt range 900` restores it (the
   cloud's G29 preset assumes 900).
+
+- **Never throttle the input path below the relay's poll rate.** The relay re-reads the wheel every
+  5 ms (200 Hz) and the board sends an input report whenever that state changes, so the host receives
+  one report per relay frame. A fixed 50 ms timer on the board (20 Hz) is what made steering feel
+  laggy and stepped, with the 20 ms relay poll stacked on top of it. Measured after the fix: 165
+  injected state frames in, 165 reports out, and the value macOS reads tracking the input.
+- **Left deliberately unfiltered.** No smoothing or deadband on the steering axis: at the current
+  rate none was needed, and either would trade jitter for real lag. Measure the raw axis first if
+  jitter is ever reported.
