@@ -190,8 +190,16 @@ static WheelHID wheel;
    verbatim (so the real wheel's state, or whatever it sends, goes straight through);
    otherwise the board streams a neutral DFGT state with the FFB counter in the unused
    vendor bits - which doubles as the cable-free "is the cloud sending FFB?" readout. */
+/* Successful input reports, so the 2 s heartbeat shows the rate the host is actually
+   getting. The old 50 ms throttle gave 20/s and felt laggy and stepped. */
+static uint32_t g_reports_sent = 0;
+
 static void send_input_state()
 {
+    static uint8_t  last_sent[12];
+    static bool     have_last = false;
+    static uint32_t last_attempt = 0;
+    static uint32_t last_fail = 0;
     uint8_t state[12];
 
     if (relay_active()) {
@@ -203,10 +211,26 @@ static void send_input_state()
                                      0xff, 0xff, 0xff, 0x81, 0x80, 0x9c };
         memcpy(state, neutral, sizeof state);
     }
+
+    /* Send on change rather than on a timer. The relay pushes a new state at up to 200 Hz
+       and the old timer threw nearly all of those frames away, so the host saw 20 steps a
+       second - the lag and the jitter. The 2 ms floor keeps us from retrying the endpoint
+       faster than TinyUSB can drain it; a failed send is retried with the same bytes. */
+    if (have_last && memcmp(state, last_sent, sizeof state) == 0) return;
+    if (millis() - last_attempt < 2) return;
+    last_attempt = millis();
+
     if (!HID.SendReport(0, state, sizeof state)) {
-        printf("[hid] SendReport failed (host not reading?)\n");
-        fflush(stdout);
+        if (millis() - last_fail >= 1000) {  /* a frozen endpoint deserves one line a second */
+            printf("[hid] SendReport failed (host not reading?)\n");
+            fflush(stdout);
+            last_fail = millis();
+        }
+        return;
     }
+    memcpy(last_sent, state, sizeof state);
+    have_last = true;
+    g_reports_sent++;
 }
 
 void setup()
@@ -240,20 +264,17 @@ void setup()
 
 void loop()
 {
-    static uint32_t last_report = 0;
     static uint32_t last_beat = 0;
 
-    if (millis() - last_report >= 50) {  /* 20 Hz: enough for a wheel state */
-        last_report = millis();
-        send_input_state();
-    }
+    send_input_state();  /* no-op unless the state changed */
     relay_poll();
     if (millis() - last_beat >= 2000) {  /* keep the log readable */
         last_beat = millis();
-        printf("[hid] %s (%lus up, ffb reports received: %u)\n",
+        printf("[hid] %s (%lus up, ffb reports received: %u, reports sent: %lu)\n",
                relay_active() ? "relaying the Mac's state" : "neutral state streaming",
-               (unsigned long)(millis() / 1000), g_ffb_count);
+               (unsigned long)(millis() / 1000), g_ffb_count,
+               (unsigned long)g_reports_sent);
         fflush(stdout);
     }
-    delay(5);
+    delay(1);
 }

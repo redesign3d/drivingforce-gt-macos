@@ -1158,7 +1158,10 @@ static int cmd_relay(int argc, char **argv)
 		   can take report delivery away from us (Steam reads this wheel too, and so does every
 		   `dfgt probe`), which silently freezes the state the game sees. Direct element reads
 		   cannot be taken away. */
-		if (now_ms() - C.relay_poll_ms >= 20) {
+		/* Poll at 200 Hz. The relay loop already runs every 3 ms, so this rate is what
+		   decides how smoothly the wheel reaches the game - at the old 20 ms the host only
+		   saw 50 steps a second and it felt laggy and jittery. */
+		if (now_ms() - C.relay_poll_ms >= 5) {
 			C.relay_poll_ms = now_ms();
 			relay_prime(&C);
 			if (memcmp(C.relay_state, C.relay_sent, 12) != 0)
@@ -1180,7 +1183,7 @@ static int cmd_relay(int argc, char **argv)
 			       C.relay_state[6], C.relay_state[7]);
 			fflush(stdout);
 		}
-		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.005, false);
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.003, false);
 	}
 	printf("\ndfgt relay: stopped (the board falls back to its own neutral state)\n");
 	return 0;
