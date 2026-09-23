@@ -4,3 +4,7 @@ build/
 .pio/
 compile_commands.json
 .cache/
+
+# PlatformIO/IDF generated config (sdkconfig.defaults is the source of truth)
+sdkconfig.*
+!sdkconfig.defaults

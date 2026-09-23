@@ -51,7 +51,7 @@ L2 (socket API) is delivered. L3 (appear native to unmodified games) is **blocke
 ### Report descriptor (115 bytes, no report IDs)
 | Report | Layout |
 |---|---|
-| Input 8B | `b0[3:0]` hat (0–7, **null = 8**), `b0[7:4]`+`b1`+`b2[0]` = buttons 1–21 (`bit n = 3+n`), `b3[7:1]` = 7 vendor state bits (**bit 4 = range flag**, fact 8), `b4 \| ((b5&0x3f)<<8)` = steering (0..16383), `b5[7:6]` = 2 vendor bits (**horn duplicate**), `b6` = throttle, `b7` = brake (255 = released) |
+| Input 8B | `b0[3:0]` hat (0–7, **null = 8**), `b0[7:4]` + `b1` + `b2` + `b3[0]` = buttons 1–21 (`b0[4]` = button 1 … `b3[0]` = button 21), `b3[7:1]` = 7 vendor state bits (**bit 4 = range flag**, fact 8), `b4 \| ((b5&0x3f)<<8)` = steering (0..16383), `b5[7:6]` = 2 vendor bits (**horn duplicate**), `b6` = throttle, `b7` = brake (255 = released) |
 | Output 7B | `0xFF00 / 0x02` → the FFB channel |
 | Feature 131B | `0xFF00 / 0x03` → unknown, untouched |
 
@@ -227,6 +227,12 @@ cannot live in software: the wheel has to plug into a small node near the wheel,
 radio-links to the Mac. The Mac side does not have to change — GFN still sees the same fake G29
 through the same board (`§4`, `docs/geforce-now.md`), and this does not touch the (closed) cloud-FFB
 verdict. It buys: no USB cable across the room, and local FFB/lap use anywhere in radio range.
+
+**Stage 1 is implemented** in `firmware/dfgt-ble-host/`: one ESP32-S3 hosts the wheel and shows it to
+macOS as a BLE HID gamepad (input only, no FFB, no wheel identity). It answers the question that needs
+no extra hardware — does the native client accept a BLE peripheral at all — and its README carries the
+wiring, the power requirement, the validation protocol and the open risks. The sections below are the
+next stage, kept in step with what Stage 1 finds.
 
 ### 9.1 What we already have
 

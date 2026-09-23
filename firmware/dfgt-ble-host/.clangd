@@ -1,0 +1,23 @@
+# ESP32-S3 firmware built with PlatformIO's ESP-IDF/Xtensa toolchain.
+#
+# PlatformIO generates compile_commands.json here (pio run -t compiledb), which gives
+# clangd the right include paths, so the IDF API (usb/usb_host.h, esp_hid_common.h,
+# freertos/…) resolves properly instead of every type looking "unknown".
+#
+# The flags below are Xtensa/GCC-only: host clang rejects them at driver level, which
+# turns into a per-file "error" before any diagnostic suppression can apply. They also
+# say nothing about how the code should be parsed, so they are removed for clangd only.
+CompileFlags:
+  Remove:
+    - -mlongcalls
+    - -fno-shrink-wrap
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -fno-jump-tables
+
+# Same convention as ../g29-gadget/.clangd: clangd still cannot fully model an Xtensa
+# target (it reports the IDF FreeRTOS/Xtensa header chain as not found even with the real
+# include paths), so its findings here are not trustworthy and the real build is the gate:
+#   cd firmware/dfgt-ble-host && pio run
+Diagnostics:
+  Suppress: '*'
