@@ -14,10 +14,10 @@ part of a wheel the game actually sees:
     bytes 4-5   X, 16-bit, centre 32768
     bytes 6-8   Z (accelerator), Rz (brake), Y (clutch), 8-bit each, 255 = released
     bytes 9-11  vendor fields, the reference's inputDefaults values (0x81, 0x80, 0x9c)
-    output      7-byte vendor report - the reference declares 16 (the lg4ff command plus
-                padding), but our OUT endpoint and buffer are 7 wide and declaring more
-                makes TinyUSB refuse the interface. The GeForce NOW client writes reports
-                to match whatever the device declares, so 7 is what it already used.
+    output      16-byte vendor report - a real G29's FFB channel, which is 16 bytes wide and
+                stalls on bare 7-byte writes. Advertise the same size: while this device
+                declared 7, the only reports that ever arrived were short stop commands and no
+                effect report was seen in a whole driving session.
 
 Run:  ./tools/make_g29_descriptor.py
 """
@@ -31,13 +31,12 @@ REFERENCE_HEX = (
     "0600ff0901950181020600ff090226ff0046ff00951075089102c0"
 )
 
-# The one deviation from the reference: its 16-byte FFB output report is shrunk to the
-# 7 bytes this board can actually serve. See the module docstring.
+# Kept for reference: this is what the output report said while it was shrunk to 7 bytes.
 OUTPUT_ITEM_16 = bytes.fromhex("0600ff090226ff0046ff00951075089102")
 OUTPUT_ITEM_7 = bytes.fromhex("0600ff090226ff0046ff00950775089102")
 
 KINDS = {8: "input", 9: "output", 11: "feature"}
-EXPECTED_BITS = {"input": 96, "output": 56}   # 12-byte input report, 7-byte FFB output report
+EXPECTED_BITS = {"input": 96, "output": 128}   # 12-byte input report, 16-byte FFB output report
 
 
 def layout(descriptor: bytes) -> dict:
@@ -70,13 +69,7 @@ def layout(descriptor: bytes) -> dict:
 
 
 def main() -> int:
-    descriptor = bytearray(bytes.fromhex(REFERENCE_HEX))
-    at = descriptor.find(OUTPUT_ITEM_16)
-    if at < 0:
-        print("refusing to write: the vendor output report item was not found", file=sys.stderr)
-        return 1
-    descriptor[at:at + len(OUTPUT_ITEM_16)] = OUTPUT_ITEM_7
-    descriptor = bytes(descriptor)
+    descriptor = bytes.fromhex(REFERENCE_HEX)
 
     totals = layout(descriptor)
     for kind, bits in EXPECTED_BITS.items():

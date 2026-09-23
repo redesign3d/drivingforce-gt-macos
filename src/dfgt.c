@@ -767,9 +767,33 @@ static void print_values(IOHIDDeviceRef dev)
 	if (elems) CFRelease(elems);
 }
 
+/* Same as dfgt_send, but for a report of any length up to 16 bytes. The fake G29 advertises a
+   16-byte FFB output report like a real one, and that is the shape the GeForce NOW client
+   writes, so being able to send one is how the OUT path gets tested. */
+static int dfgt_send_len(struct dfgt_ctx *c, const uint8_t *cmd, size_t len, const char *what)
+{
+	uint8_t buf[16];
+	IOReturn r;
+
+	if (!c->dev) { say("dfgt: no device"); return -1; }
+	if (len > sizeof buf) len = sizeof buf;
+	memcpy(buf, cmd, len);
+	r = IOHIDDeviceSetReport(c->dev, kIOHIDReportTypeOutput, 0, buf, (CFIndex)len);
+	if (r != kIOReturnSuccess) {
+		say("dfgt: %s failed (0x%08x) sending %zu bytes", what, (unsigned)r, len);
+		return -1;
+	}
+	if (c->verbose) {
+		printf("> %-22s %zu bytes:", what, len);
+		for (size_t i = 0; i < len; i++) printf(" %02x", buf[i]);
+		printf("\n");
+	}
+	return 0;
+}
+
 static int cmd_probe(int argc, char **argv)
 {
-	uint8_t custom[DFGT_CMD_LEN];
+	uint8_t custom[16];		/* a real G29's FFB output report is 16 bytes wide */
 	size_t custom_len = 0;
 	int have_custom = 0;
 	int want_values = 0;
@@ -779,12 +803,12 @@ static int cmd_probe(int argc, char **argv)
 			want_values = 1;
 		} else if (!strcmp(argv[i], "--cmd") && i + 1 < argc) {
 			const char *h = argv[++i];
-			for (size_t j = 0; j + 1 < strlen(h) && custom_len < DFGT_CMD_LEN; j += 2) {
+			for (size_t j = 0; j + 1 < strlen(h) && custom_len < sizeof custom; j += 2) {
 				unsigned b;
 				if (sscanf(h + j, "%2x", &b) != 1) break;
 				custom[custom_len++] = (uint8_t)b;
 			}
-			have_custom = custom_len == DFGT_CMD_LEN;
+			have_custom = custom_len > 0;
 		}
 	}
 
@@ -808,7 +832,7 @@ static int cmd_probe(int argc, char **argv)
 	if (want_values) print_values(C.dev);
 	else dump_elements(C.dev);
 	if (have_custom) {
-		dfgt_send(&C, custom, "raw");
+		dfgt_send_len(&C, custom, custom_len, "raw");
 	} else {
 		send_built(&C, cmd_force_off, "force off (self-test)");
 	}
@@ -1040,7 +1064,11 @@ static void relay_poll_serial(struct dfgt_ctx *c)
 				if (sum == frame[got - 1] && frame[1] == RELAY_FFB && want >= DFGT_CMD_LEN) {
 					uint8_t out[DFGT_CMD_LEN];
 					/* The G29 profile declares a 16-byte output report, so the board may hand us
-					   more than the 7-byte lg4ff command; the wheel wants exactly those 7. */
+					   more than the 7-byte lg4ff command; the wheel wants exactly those 7. The
+					   length is logged because it shows which shape the client actually writes -
+					   no effect report ever arrived while we advertised only 7 bytes. */
+					printf("[ffb] host sent a %u-byte output report\n", want);
+					fflush(stdout);
 					memcpy(out, frame + 3, DFGT_CMD_LEN);
 					if (c->dev && IOHIDDeviceSetReport(c->dev, kIOHIDReportTypeOutput, 0,
 					                                   out, DFGT_CMD_LEN) == kIOReturnSuccess)
