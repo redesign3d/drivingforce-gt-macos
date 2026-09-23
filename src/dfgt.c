@@ -1137,6 +1137,7 @@ static int cmd_relay(int argc, char **argv)
 	C.writable = 0;		/* the cloud drives the wheel's settings; do not fight it */
 	C.quiet_startup = 1;
 	C.quiet_report = 2;		/* the relay prints its own, decoded output */
+	C.range = DFGT_RANGE_DEFAULT;	/* the wheel forgets it on every replug (~200 deg) */
 	C.relay_fd = serial_open(port);
 	if (C.relay_fd < 0) { say("dfgt: cannot open %s", port); return 1; };
 	if (hid_start(&C) < 0) return 1;
@@ -1146,6 +1147,21 @@ static int cmd_relay(int argc, char **argv)
 	}
 	signal(SIGINT, on_signal);
 	signal(SIGTERM, on_signal);
+
+	/* on_matched skips this for read-only clients, so in relay mode the bring-up happens here.
+	   It matters because the wheel forgets its range on every replug and comes back at ~200
+	   deg, which feels twitchy against the game's 900 deg preset. */
+	{
+		uint8_t cmd[DFGT_CMD_LEN];
+
+		/* neutralise first: a previous session may have left a force applied */
+		send_built(&C, cmd_force_off, "force off");
+		send_built(&C, cmd_autocenter_off, "autocenter off");
+		cmd_range(C.range, cmd);
+		if (dfgt_send(&C, cmd, "range") == 0)
+			printf("  range %u deg applied to the wheel\n", C.range);
+	}
+	fflush(stdout);
 
 	relay_prime(&C);
 	snprintf(line, sizeof line, "dfgt relay: %04x:%04x <-> %s", DFGT_VID, DFGT_PID, port);
@@ -1458,7 +1474,8 @@ static void usage(void)
 	"  dfgt mode <name> [--force]                re-enumerate as dfex|dfp|g25|dfgt|g27|g29\n"
 	"  dfgt native                               alias for: dfgt mode dfgt\n"
 	"  dfgt daemon [--range D] [--autocenter M]   keep the wheel alive + serve the socket\n"
-	"  dfgt relay --port /dev/…                   bridge the real wheel and the G29 impersonator\n"
+	"  dfgt relay --port /dev/…                   bridge the real wheel and the G29 impersonator;\n"
+	"                                            applies the default range to the wheel at startup\n"
 	"  dfgt status                               print current wheel state\n"
 	"  dfgt selftest [--fixture FILE]            regression checks\n"
 	"\n"

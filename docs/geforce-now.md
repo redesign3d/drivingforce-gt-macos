@@ -255,8 +255,10 @@ DFGT with this driver for local macOS use, where it is the only thing that makes
   centre between frames while still sending state.
 - **Logitech G HUB can run alongside this.** With G HUB active the fake G29 stays writable and keeps
   tracking the real wheel, so its presence does not conflict with the relay or with report delivery.
-- **The wheel's range reverts to ~200 degrees on every replug**; `dfgt range 900` restores it (the
-  cloud's G29 preset assumes 900).
+- **The wheel's range reverts to ~200 degrees on every replug.** The relay now applies
+  `DFGT_RANGE_DEFAULT` (900) itself on startup, so this is automatic; `dfgt range 900` still does it
+  by hand. The cloud's G29 preset assumes 900, and relay mode had been skipping the
+  bring-up for the same reason it skips every other setting - it is a read-only client.
 
 - **Never throttle the input path below the relay's poll rate.** The relay re-reads the wheel every
   5 ms (200 Hz) and the board sends an input report whenever that state changes, so the host receives
