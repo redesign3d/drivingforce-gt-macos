@@ -256,6 +256,14 @@ verdict. It buys: no USB cable across the room, and local FFB/lap use anywhere i
 | New hardware | 2nd S3 (~€15), host wiring, power | none | Pi Zero 2 W (~€20) + VirtualHere licence |
 | Verdict | **recommended** — best feel, keeps what GFN already accepts | fallback if only one board must be used | least code, worst feel, needs a dext we do not control |
 
+**Option B is the only single-board answer, and its price is the thing that got us this far: the USB
+dongle stops existing.** The S3 has one USB peripheral — GPIO19/20 are shared between the OTG
+controller and the USB-Serial-JTAG bridge — so one board can be the wheel's host or the Mac's HID
+device, never both, and macOS has no user-space virtual HID for the Mac to receive the wheel any
+other way (§7 G1). So B replaces the verified `046D:C24F:1350` USB path with a Bluetooth HID path,
+which has to re-pass GFN detection, and it is capped by the BLE connection interval (~7.5–15 ms,
+~66–133 Hz) instead of ~500 Hz.
+
 ### 9.4 Recommended shape (A)
 
 ```
