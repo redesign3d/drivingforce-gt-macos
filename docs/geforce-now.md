@@ -268,3 +268,51 @@ DFGT with this driver for local macOS use, where it is the only thing that makes
 - **Left deliberately unfiltered.** No smoothing or deadband on the steering axis: at the current
   rate none was needed, and either would trade jitter for real lag. Measure the raw axis first if
   jitter is ever reported.
+
+## Force feedback: what the evidence says (2026-09-23)
+
+Our own chain is proven end to end. Commanding `ffb constant 127` from the Mac physically
+moves the wheel (steering axis 16019 -> 11254, back to 16134 on `-127`), the board relays
+output reports, and the relay forwards them to the wheel. Nothing is missing on the wheel side.
+
+What the cloud does *not* do is send effects. Measured during live Forza Horizon 5 driving:
+
+- **0** FFB output reports in an 8 s window while steering input streamed normally.
+- Across the whole session: 20 output reports, every one `13 00 00 00 00 00 00` - "stop slot 1",
+  the same neutralising command our own driver's force-off sends. A working session in the
+  reference capture is dominated by effects (1577 constant-force reports out of 1755).
+
+The client's own FFB code goes through Apple's ForceFeedback framework - it contains
+`HIDInitForceFeedback`, `FFIsForceFeedback`, `FFDeviceGetForceFeedbackCapabilities`,
+`FFDeviceSendForceFeedbackCommand`, plus the verdict strings "Device %d supports %d Force
+Feedback axes", "Force Feedback checks are ENABLED/DISABLED" and **"force feedback is disabled
+for this device!"**.
+
+On this Mac that framework can never grant FFB to anything:
+
+- `FFIsForceFeedback` fails for **all 19 HID devices**, including the real Driving Force GT
+  (hardware FFB demonstrably working via our driver). `FFCreateDevice` fails too.
+- The framework is a plug-in host, not a HID driver: `IOForceFeedbackLib.h` says "This plugIn
+  architecture uses the CFPlugIn model (COM) ... The Force Feedback Framework will find
+  available plugIns and will use this interface to communicate with the hardware". Its imports
+  contain no HID APIs at all - only CoreFoundation, `IOCreatePlugInInterfaceForService`,
+  `IORegistryEntryCreateCFProperties`, `dlopen`/`dlclose`. It cannot parse a report descriptor.
+- A device becomes FFB-capable only when a driver declares `IOCFPlugInTypes` mapping UUID
+  `F4545CE5-BF5B-11D6-A4BB-0003933E3E3E` to a ForceFeedback plug-in bundle shipped inside that
+  driver. **Nothing on this system declares it**: 0 hits in both kernel collections (control
+  strings prove those are greppable), 0 in every DriverKit extension, 0 in /Library/Extensions,
+  0 in G HUB (its HID driver extension claims only two mice, G600/G602), 0 in the GFN app.
+  Logitech never shipped Apple Silicon FFB drivers, and macOS dropped the legacy kext path.
+
+Consequences:
+
+- Changing our report descriptor cannot help. A HID PID usage page (0x0F) would only matter to
+  a plug-in that reads it, and no plug-in exists. The gate is the missing OS-level provider.
+- Writing our own plug-in is not reachable either: it must live inside a driver (kext/DriverKit
+  entitlement, both unavailable), and the GFN client is hardened-runtime with library validation
+  on (`flags=0x10000(runtime)`, TeamIdentifier 6KR3T733EC, no disable-library-validation
+  entitlement), so an unsigned third-party bundle could not load into it even if installed.
+- This matches the community record: FFB does not work on macOS for Logitech wheels, and the
+  projects that do get FFB (fffb, g923-mac-ffb, karrvel/g29-mac) all bypass the framework and
+  write Logitech's vendor FFB reports from a local process - which is exactly what our relay
+  already does on the wheel side.
