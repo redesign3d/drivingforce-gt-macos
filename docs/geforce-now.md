@@ -286,7 +286,10 @@ The client's own FFB code goes through Apple's ForceFeedback framework - it cont
 `HIDInitForceFeedback`, `FFIsForceFeedback`, `FFDeviceGetForceFeedbackCapabilities`,
 `FFDeviceSendForceFeedbackCommand`, plus the verdict strings "Device %d supports %d Force
 Feedback axes", "Force Feedback checks are ENABLED/DISABLED" and **"force feedback is disabled
-for this device!"**.
+for this device!"**. The client calls that framework **directly**, not through SDL: libGeronimo
+imports eleven FF symbols (`FFCreateDevice`, `FFDeviceCreateEffect`, `FFEffectStart`, ...) and
+links `ForceFeedback.framework` itself. So the "does this device support force feedback?" answer
+comes from the OS plug-in lookup, never from the report descriptor.
 
 On this Mac that framework can never grant FFB to anything:
 
