@@ -1,8 +1,0 @@
-# Stage 1 app: Bluedroid + USB host + HID device measured 0.81 MB, so it does fit the
-# 1 MB default slot — but only 174 KB spare, and a wrong guess here shows up as a
-# confusing link error. The chip has 8 MB declared, so the app gets 4 MB instead.
-# No OTA: flashing is done over the CH343 bridge port.
-# name,   type, subtype, offset,   size
-nvs,      data, nvs,     0x9000,   0x6000
-phy_init, data, phy,     0xf000,   0x1000
-factory,  app,  factory, 0x10000,  0x400000
